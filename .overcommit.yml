@@ -1,0 +1,13 @@
+PreCommit:
+  RuboCop:
+    enabled: true
+    command: ['bundle', 'exec', 'rubocop']
+    includes: '**/*.rb'
+  RSpec:
+    enabled: true
+    command: ['bundle', 'exec', 'rspec']
+    include: '**/*_spec.rb'
+  Fasterer:
+    enabled: true
+    command: ['bundle', 'exec', 'fasterer']
+    include: '**/*.rb'

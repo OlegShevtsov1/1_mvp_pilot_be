@@ -1,0 +1,40 @@
+services:
+  db:
+    build:
+      context: .
+      dockerfile: .docker/postgres.Dockerfile
+    volumes:
+      - ./tmp/db:/var/lib/postgresql/data
+    environment:
+      POSTGRES_PASSWORD: password
+    ports:
+      - '${EXTERNAL_DB_PORT:-5432}:5432'
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+  app:
+    build:
+      context: .
+      dockerfile: .docker/app.Dockerfile
+    command: bash -c "rm -f tmp/pids/server.pid && bundle install && bundle exec rails s -p ${RAILS_PORT:-3000} -b '0.0.0.0'"
+    stdin_open: true
+    tty: true
+    volumes:
+      - '.:/code'
+    ports:
+      - '${RAILS_PORT:-3000}:${RAILS_PORT:-3000}'
+    environment:
+      - 'PORT=${RAILS_PORT:-3000}'
+      - 'REDIS_URL=redis://redis:6379/0'
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - 'db'
+      - 'redis'
+
+volumes:
+  redis-data:

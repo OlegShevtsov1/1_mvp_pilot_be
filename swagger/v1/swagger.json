@@ -1,0 +1,1176 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "Pilot API",
+    "version": "v1",
+    "description": "API documentation for Pilot application"
+  },
+  "components": {
+    "securitySchemes": {
+      "x_auth_token": {
+        "type": "apiKey",
+        "name": "X-User-Token",
+        "in": "header"
+      },
+      "x_auth_email": {
+        "type": "apiKey",
+        "name": "X-User-Email",
+        "in": "header"
+      }
+    }
+  },
+  "paths": {
+    "/api/v1/projects": {
+      "parameters": [
+        {
+          "name": "X-User-Token",
+          "in": "header",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "X-User-Email",
+          "in": "header",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "summary": "Lists all projects for user",
+        "tags": [
+          "Projects"
+        ],
+        "security": [
+          {
+            "x_auth_token": [],
+            "x_auth_email": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "projects found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "data": [
+                    {
+                      "id": 5087,
+                      "name": "Sample Project",
+                      "description": "This is a sample project description that meets the minimum length requirement",
+                      "user": {
+                        "id": 7040,
+                        "email": "test1@example.com"
+                      },
+                      "tasks": []
+                    },
+                    {
+                      "id": 5088,
+                      "name": "Sample Project",
+                      "description": "This is a sample project description that meets the minimum length requirement",
+                      "user": {
+                        "id": 7040,
+                        "email": "test1@example.com"
+                      },
+                      "tasks": []
+                    },
+                    {
+                      "id": 5089,
+                      "name": "Sample Project",
+                      "description": "This is a sample project description that meets the minimum length requirement",
+                      "user": {
+                        "id": 7040,
+                        "email": "test1@example.com"
+                      },
+                      "tasks": []
+                    }
+                  ]
+                },
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "user_id": {
+                            "type": "integer"
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "format": "date_time"
+                          },
+                          "updated_at": {
+                            "type": "string",
+                            "format": "date_time"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "description"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized"
+          }
+        }
+      },
+      "post": {
+        "summary": "Creates a project",
+        "tags": [
+          "Projects"
+        ],
+        "security": [
+          {
+            "x_auth_token": [],
+            "x_auth_email": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": "project created",
+            "content": {
+              "application/json": {
+                "example": {
+                  "data": {
+                    "id": 5090,
+                    "name": "Test Project",
+                    "description": "This is a test description with at least 20 characters",
+                    "user": {
+                      "id": 7042,
+                      "email": "test3@example.com"
+                    },
+                    "tasks": []
+                  }
+                },
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "integer"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "user_id": {
+                          "type": "integer"
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date_time"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "format": "date_time"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "description"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "invalid request"
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "project": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "description"
+                    ]
+                  }
+                },
+                "required": [
+                  "project"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          }
+        },
+        {
+          "name": "X-User-Token",
+          "in": "header",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "X-User-Email",
+          "in": "header",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "summary": "Retrieves a project",
+        "tags": [
+          "Projects"
+        ],
+        "security": [
+          {
+            "x_auth_token": [],
+            "x_auth_email": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "project found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "data": {
+                    "id": 5091,
+                    "name": "Sample Project",
+                    "description": "This is a sample project description that meets the minimum length requirement",
+                    "user": {
+                      "id": 7044,
+                      "email": "test5@example.com"
+                    },
+                    "tasks": []
+                  }
+                },
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "integer"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "user_id": {
+                          "type": "integer"
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date_time"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "format": "date_time"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "description"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "project not found"
+          },
+          "403": {
+            "description": "forbidden"
+          }
+        }
+      },
+      "put": {
+        "summary": "Updates a project",
+        "tags": [
+          "Projects"
+        ],
+        "security": [
+          {
+            "x_auth_token": [],
+            "x_auth_email": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "project updated",
+            "content": {
+              "application/json": {
+                "example": {
+                  "data": {
+                    "id": 5093,
+                    "name": "Updated Project",
+                    "description": "This is an updated description with at least 20 characters",
+                    "user": {
+                      "id": 7048,
+                      "email": "test9@example.com"
+                    },
+                    "tasks": []
+                  }
+                },
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "integer"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "user_id": {
+                          "type": "integer"
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date_time"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "format": "date_time"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "description"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "project": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "description"
+                    ]
+                  }
+                },
+                "required": [
+                  "project"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Deletes a project",
+        "tags": [
+          "Projects"
+        ],
+        "security": [
+          {
+            "x_auth_token": [],
+            "x_auth_email": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "project deleted"
+          }
+        }
+      }
+    },
+    "/api/v1/sign_in": {
+      "post": {
+        "summary": "Creates a session (logs in)",
+        "tags": [
+          "Sessions"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "session created"
+          },
+          "401": {
+            "description": "invalid credentials",
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": "error",
+                  "message": "Invalid email or password"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "example": "user@example.com"
+                  },
+                  "password": {
+                    "type": "string",
+                    "example": "password"
+                  }
+                },
+                "required": [
+                  "email",
+                  "password"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/tasks": {
+      "parameters": [
+        {
+          "name": "project_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          }
+        },
+        {
+          "name": "X-User-Token",
+          "in": "header",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "X-User-Email",
+          "in": "header",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "summary": "Lists all tasks for a project",
+        "tags": [
+          "Tasks"
+        ],
+        "security": [
+          {
+            "x_auth_token": [],
+            "x_auth_email": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "tasks found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "data": [
+                    {
+                      "id": 2365,
+                      "name": "Sample Task",
+                      "description": "This is a sample task description",
+                      "status": "not_started",
+                      "project": {
+                        "id": 5095,
+                        "name": "Sample Project",
+                        "description": "This is a sample project description that meets the minimum length requirement"
+                      }
+                    },
+                    {
+                      "id": 2366,
+                      "name": "Sample Task",
+                      "description": "This is a sample task description",
+                      "status": "not_started",
+                      "project": {
+                        "id": 5095,
+                        "name": "Sample Project",
+                        "description": "This is a sample project description that meets the minimum length requirement"
+                      }
+                    },
+                    {
+                      "id": 2367,
+                      "name": "Sample Task",
+                      "description": "This is a sample task description",
+                      "status": "not_started",
+                      "project": {
+                        "id": 5095,
+                        "name": "Sample Project",
+                        "description": "This is a sample project description that meets the minimum length requirement"
+                      }
+                    }
+                  ]
+                },
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "not_started",
+                              "in_progress",
+                              "completed"
+                            ]
+                          },
+                          "project_id": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "description",
+                          "status"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "project not found"
+          }
+        }
+      },
+      "post": {
+        "summary": "Creates a task",
+        "tags": [
+          "Tasks"
+        ],
+        "security": [
+          {
+            "x_auth_token": [],
+            "x_auth_email": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": "task created",
+            "content": {
+              "application/json": {
+                "example": {
+                  "data": {
+                    "id": 2368,
+                    "name": "Test Task",
+                    "description": "This is a test task",
+                    "status": "not_started",
+                    "project": {
+                      "id": 5096,
+                      "name": "Sample Project",
+                      "description": "This is a sample project description that meets the minimum length requirement"
+                    }
+                  }
+                },
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "integer"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "not_started",
+                            "in_progress",
+                            "completed"
+                          ]
+                        },
+                        "project_id": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "description",
+                        "status"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "invalid request"
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "task": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "not_started",
+                          "in_progress",
+                          "completed"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "description",
+                      "status"
+                    ]
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/tasks/{id}": {
+      "parameters": [
+        {
+          "name": "project_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          }
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          }
+        },
+        {
+          "name": "X-User-Token",
+          "in": "header",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "X-User-Email",
+          "in": "header",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "summary": "Fetches a task",
+        "tags": [
+          "Tasks"
+        ],
+        "security": [
+          {
+            "x_auth_token": [],
+            "x_auth_email": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "task found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "data": {
+                    "id": 2369,
+                    "name": "Sample Task",
+                    "description": "This is a sample task description",
+                    "status": "not_started",
+                    "project": {
+                      "id": 5098,
+                      "name": "Sample Project",
+                      "description": "This is a sample project description that meets the minimum length requirement"
+                    }
+                  }
+                },
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "integer"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "not_started",
+                            "in_progress",
+                            "completed"
+                          ]
+                        },
+                        "project_id": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "description",
+                        "status"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "task not found"
+          }
+        }
+      },
+      "put": {
+        "summary": "Updates a task",
+        "tags": [
+          "Tasks"
+        ],
+        "security": [
+          {
+            "x_auth_token": [],
+            "x_auth_email": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "task updated",
+            "content": {
+              "application/json": {
+                "example": {
+                  "data": {
+                    "id": 2370,
+                    "name": "Updated Task",
+                    "description": "This is an updated task",
+                    "status": "in_progress",
+                    "project": {
+                      "id": 5100,
+                      "name": "Sample Project",
+                      "description": "This is a sample project description that meets the minimum length requirement"
+                    }
+                  }
+                },
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "integer"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "not_started",
+                            "in_progress",
+                            "completed"
+                          ]
+                        },
+                        "project_id": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "description",
+                        "status"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "invalid request"
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "task": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "not_started",
+                          "in_progress",
+                          "completed"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "description",
+                      "status"
+                    ]
+                  }
+                },
+                "required": [
+                  "task"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Deletes a task",
+        "tags": [
+          "Tasks"
+        ],
+        "security": [
+          {
+            "x_auth_token": [],
+            "x_auth_email": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "task deleted"
+          }
+        }
+      }
+    },
+    "/api/v1/users": {
+      "post": {
+        "summary": "Creates a user",
+        "tags": [
+          "Users"
+        ],
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": "user created",
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": "success",
+                  "message": "User created successfully",
+                  "data": {
+                    "user_id": 7061,
+                    "email": "new_user1741945998@example.com",
+                    "authentication_token": "peycuNcbTDjxxFoMdARr"
+                  }
+                },
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "user_id": {
+                          "type": "integer"
+                        },
+                        "email": {
+                          "type": "string",
+                          "format": "email"
+                        },
+                        "authentication_token": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "user_id",
+                        "email"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "invalid request",
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": "error",
+                  "message": "User could not be created",
+                  "errors": [
+                    "Email is invalid",
+                    "Password confirmation doesn't match Password",
+                    "Password is too short (minimum is 6 characters)"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "user": {
+                    "type": "object",
+                    "properties": {
+                      "email": {
+                        "type": "string",
+                        "example": "user@example.com"
+                      },
+                      "password": {
+                        "type": "string",
+                        "example": "password"
+                      },
+                      "password_confirmation": {
+                        "type": "string",
+                        "example": "password"
+                      }
+                    },
+                    "required": [
+                      "email",
+                      "password",
+                      "password_confirmation"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me": {
+      "get": {
+        "summary": "Get the current user profile",
+        "tags": [
+          "Users"
+        ],
+        "security": [
+          {
+            "x_auth_token": [],
+            "x_auth_email": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-User-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-User-Email",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "user profile",
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": "success",
+                  "message": "User profile",
+                  "data": {
+                    "user_id": 7062,
+                    "email": "test22@example.com"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": "Not Authorized"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3000",
+      "description": "PILOT server"
+    }
+  ]
+}
