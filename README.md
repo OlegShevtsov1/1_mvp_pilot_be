@@ -2,8 +2,8 @@
 
 ## Live
 
-- **Production API:** <https://pilot.up.km.ua/health>
-- **Dev API:** <https://dev.pilot.up.km.ua/health>
+- **Production API:** <https://pilot.up.km.ua/health> · **Swagger UI:** <https://pilot.up.km.ua/api-docs/index.html>
+- **Dev API:** <https://dev.pilot.up.km.ua/health> · **Swagger UI:** <https://dev.pilot.up.km.ua/api-docs/index.html>
 - **Frontend (prod):** <https://app.pilot.up.km.ua> · repo [1_mvp_pilot_fe](https://github.com/OlegShevtsov1/1_mvp_pilot_fe)
 - **SDLC tooling:** [1_mvp_sdlc](https://github.com/OlegShevtsov1/1_mvp_sdlc)
 
