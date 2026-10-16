@@ -13,6 +13,12 @@ A robust RESTful API backend for managing projects and tasks. This application a
 
 **GitHub:** [pilot/blob/develop/TASK_DEFINITION.md](pilot/blob/develop/TASK_DEFINITION.md)
 
+A robust RESTful API backend for managing projects and tasks. This application allows users to create, update, and track projects and their associated tasks through a secure API.
+
+# Detailed task description
+
+**GitHub:** [pilot/blob/develop/TASK_DEFINITION.md](pilot/blob/develop/TASK_DEFINITION.md)
+
 ## Repository
 
 **GitHub:** [pilot](pilot)
@@ -417,6 +423,39 @@ starting with `Type:`, with one of `feat`, `fix`, `chore`, `docs`, `refactor`, `
 `changelog-check` runs on every pull request into `main` or `develop` (`bin/changelog-check`): a
 `Type: feat` or `Type: fix` PR must change `[Unreleased]` in `CHANGELOG.md` or add a version section;
 the label `skip-changelog` passes it. `Release` runs on every pushed `v*` tag (see "Релізи й hotfix").
+
+## AI PR review
+
+`.github/workflows/ai-review.yml` (check `AI review`, decision 32) reviews human pull requests with
+`anthropics/claude-code-action` (Sonnet, read-only tools).
+
+**Switch.** The repository variable `AI_REVIEW`: only the exact value `on` runs a review. Anything
+else, including unset, ends the check green in seconds with `AI review disabled (AI_REVIEW=off)` and
+no model call. Set it with `gh variable set AI_REVIEW -b on` or `gh variable set AI_REVIEW -b off`;
+the default and resting state is `off`.
+
+**Secret.** `ANTHROPIC_API_KEY` (`gh secret set ANTHROPIC_API_KEY`, value pasted at the prompt). The
+alternative is a Claude subscription token `CLAUDE_CODE_OAUTH_TOKEN`: change the action input
+`anthropic_api_key` to `claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}` by PR.
+
+**Triggers.** Pull request `opened`, `reopened`, `ready_for_review`, `synchronize` (a push, also after
+"changes requested") and `review_requested`. To ask for a re-review without a push, comment
+`@claude review` on the PR (only users with write access; the action refuses others).
+
+**Skips.** The factory's `archon/task-factory-*` PRs (the factory reviews its own PRs, Р-C5),
+dependabot, draft PRs and the release PR `develop` → `main`: the job is skipped, or green with
+`AI review skipped: <reason>` when triggered by a comment.
+
+**What red means.** While `on`, the review found P0 or P1 findings: fix them and push, and it runs
+again. It is also red when the review produced no valid summary (fail closed). The single PR comment,
+updated on every run, lists the findings as `path:line` with severity and ends with
+`AI-REVIEW: P0=n P1=n P2=n`; `ai-review/result.json` holds the same counts in the job workspace. The
+factory merge-gate refuses non-green checks; making `AI review` a required check by branch protection
+follows with PUB.
+
+**Cost.** One review per triggering event, at most 25 turns and a 15-minute job timeout; a push
+cancels a running review. Usage shows in the Anthropic console for the key. Keep it `off` unless a
+review is wanted.
 
 ## API Documentation
 

@@ -20,6 +20,9 @@ its entry under `[Unreleased]` (checked by `changelog-check`); a release moves t
 
 ### Fixed
 
+- Swagger UI "Servers" shows the origin the docs were opened on (behind kamal-proxy: the forwarded https
+  origin) instead of always `http://localhost:3000` (PILOT-110).
+
 ### Security
 
 ## [0.1.0] - 2026-10-16
