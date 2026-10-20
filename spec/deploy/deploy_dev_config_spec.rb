@@ -40,7 +40,7 @@ RSpec.describe 'config/deploy.dev.yml' do
     files = %w[
       config/deploy.dev.yml .kamal/secrets.dev .github/workflows/dev-deploy.yml
       config/deploy.yml .kamal/secrets.prod .github/workflows/kamal-deploy.yml .github/workflows/kamal-manage.yml
-      .github/workflows/release.yml
+      .github/workflows/release.yml .github/workflows/main-guard.yml .github/workflows/develop-guard.yml
     ] + Dir.glob('deploy/*', base: Rails.root.to_s)
     forbidden = {
       'the project name' => /\bpilot\b/,

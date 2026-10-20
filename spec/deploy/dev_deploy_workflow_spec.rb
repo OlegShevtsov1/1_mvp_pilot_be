@@ -55,7 +55,7 @@ RSpec.describe '.github/workflows/dev-deploy.yml' do
   end
 
   it 'passes the mirror VPN client inputs to every vpn-up step' do
-    vpn_ups = jobs.values.flat_map { |job| job.fetch('steps') { [] } }.select { |s| s['uses'].to_s.end_with?('/vpn-up@env/dev') }
+    vpn_ups = jobs.values.flat_map { |job| job.fetch('steps') { [] } }.select { |s| s['uses'].to_s == './infra-helpers/.github/actions/vpn-up' }
 
     expect(vpn_ups.size).to eq(1)
     vpn_ups.each { |s| expect(s.fetch('with').to_a).to eq(vpn_up_inputs) }

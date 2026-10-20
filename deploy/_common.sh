@@ -324,3 +324,33 @@ resolve_release_tag() {
   fi
   echo "sha-${commit}"
 }
+
+# From v0.2.0 prod deploys from the public mirror (decision 43), which builds nothing: it promotes the
+# image the primary's Dev Deploy built. MIRROR_SOURCE.json, written by publish-mirror at the mirror's
+# root, is the only record of which primary commit a mirror tag stands for.
+
+# resolve_mirror_release vX.Y.Z <source_sha>: prints sha-<source_sha>, or exits 1 (2 for malformed
+# input). The tag must pass resolve_release_tag on the mirror, and MIRROR_SOURCE.json must record
+# exactly one entry for it whose primary_sha is source_sha.
+resolve_mirror_release() {
+  local tag="$1" source_sha="$2" file='MIRROR_SOURCE.json' recorded
+  if [[ ! "$source_sha" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "error: source_sha '${source_sha}' is not the 40-hex primary commit of the release" >&2
+    exit 2
+  fi
+  resolve_release_tag "$tag" > /dev/null
+  if [[ ! -f "$file" ]]; then
+    echo "error: ${file} is missing: only a release synced by publish-mirror deploys from the mirror" >&2
+    exit 1
+  fi
+  if ! recorded="$(jq -er --arg tag "$tag" \
+       '[.tags[]? | select(.tag == $tag) | .primary_sha] | if length == 1 then .[0] else error end' "$file" 2> /dev/null)"; then
+    echo "error: ${file} records no single primary sha for ${tag} (missing, duplicated or not valid JSON)" >&2
+    exit 1
+  fi
+  if [[ "$recorded" != "$source_sha" ]]; then
+    echo "error: source_sha ${source_sha} does not match the primary sha ${recorded} that ${file} records for ${tag}" >&2
+    exit 1
+  fi
+  echo "sha-${source_sha}"
+}

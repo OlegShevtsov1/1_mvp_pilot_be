@@ -34,6 +34,9 @@ jobs:
       - name: Check out Repository
         uses: actions/checkout@v4
 
+      - name: Public-repo check
+        run: bash scripts/check-public-repo.sh
+
       - name: Set up Ruby ${{ needs.setup.outputs.ruby-version }}
         uses: ruby/setup-ruby@v1
         with:

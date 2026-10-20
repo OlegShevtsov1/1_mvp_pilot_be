@@ -9,6 +9,12 @@ name: Kamal Deploy
 # Dual control: runs only from main, with environment=prod, confirm=prod and a version that is a
 # release tag vX.Y.Z, annotated and on main, whose image is already in ECR; a bare sha is refused.
 #
+# Two modes (decision 43). Primary (vars.MIRROR unset): version only, the image of the tag's commit.
+# Mirror (vars.MIRROR == 'true', the public copy prod deploys from since v0.2.0): version and
+# source_sha, the primary commit of the tag; the guard refuses unless MIRROR_SOURCE.json records that
+# pair and the mirror's tag passes the same tag checks, and the image sha-<source_sha> the primary's
+# Dev Deploy built is promoted, never built here.
+#
 # release-watch then watches prod for 10 minutes (/health every 30 s, then the new GlitchTip
 # issues of <PROJECT_NAME>-be-prod) and reports ✅ or ❌. It never rolls back: a person decides.
 
@@ -24,6 +30,10 @@ on:
         description: Release tag vX.Y.Z (annotated, on main); a bare sha is refused
         required: true
         type: string
+      source_sha:
+        description: Mirror only (vars.MIRROR=true), required there - the 40-hex primary commit of the tag, as recorded in MIRROR_SOURCE.json; leave empty on the primary
+        required: false
+        type: string
       confirm:
         description: Type prod to deploy
         required: true
@@ -37,11 +47,12 @@ env:
 
 jobs:
   guard:
-    name: Guard (ref, confirm, version)
+    name: ${{ vars.MIRROR == 'true' && 'Guard, mirror mode (ref, confirm, version, source_sha)' || 'Guard, primary mode (ref, confirm, version)' }}
     runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
     outputs:
       tag: ${{ steps.inputs.outputs.tag }}
-      version: ${{ steps.tag.outputs.version }}
+      version: ${{ steps.mirror.outputs.version || steps.tag.outputs.version }}
+      source_sha: ${{ steps.inputs.outputs.source_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,6 +65,8 @@ jobs:
           ENVIRONMENT: ${{ inputs.environment }}
           CONFIRM: ${{ inputs.confirm }}
           VERSION: ${{ inputs.version }}
+          MIRROR: ${{ vars.MIRROR == 'true' }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
         run: deploy/prod_guard.sh deploy >> "${GITHUB_OUTPUT}"
 
       - name: Check that the version is an annotated release tag on main
@@ -61,6 +74,14 @@ jobs:
         env:
           TAG: ${{ steps.inputs.outputs.tag }}
         run: deploy/release_tag_check.sh "${TAG}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check the version and source_sha against MIRROR_SOURCE.json
+        id: mirror
+        if: vars.MIRROR == 'true'
+        env:
+          TAG: ${{ steps.inputs.outputs.tag }}
+          SOURCE_SHA: ${{ steps.inputs.outputs.source_sha }}
+        run: deploy/mirror_source_check.sh "${TAG}" "${SOURCE_SHA}" >> "${GITHUB_OUTPUT}"
 
   # Only names are checked and printed, never values.
   preflight:
@@ -77,6 +98,7 @@ jobs:
           VPN_CI_OVPN: ${{ secrets.VPN_CI_OVPN }}
           PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
           PROD_VPN_IP: ${{ secrets.PROD_VPN_IP }}
+          INFRA_READ_TOKEN: ${{ secrets.INFRA_READ_TOKEN }}
           SECRET_KEY_BASE: ${{ secrets.SECRET_KEY_BASE }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
@@ -91,7 +113,7 @@ jobs:
           # login inside deploy.sh; every other variable .kamal/secrets.prod reads is a secret.
           mapfile -t kamal_secrets < <(secret_names .kamal/secrets.prod | grep -vxE 'PROJECT_NAME|KAMAL_REGISTRY_PASSWORD')
           required=(
-            AWS_ROLE_ARN VPN_CI_OVPN PROD_SSH_KEY PROD_VPN_IP
+            AWS_ROLE_ARN VPN_CI_OVPN PROD_SSH_KEY PROD_VPN_IP INFRA_READ_TOKEN
             "${kamal_secrets[@]}"
             TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID TELEGRAM_PILOT_PROD_ALERTS_THREAD_ID
           )
@@ -105,25 +127,49 @@ jobs:
           fi
           echo "all required secrets are set: ${required[*]}"
 
-  # A uses: that cannot be resolved kills its job at "Set up job", before any step can explain
-  # why, so the shared actions are resolved here, in a job that touches nothing.
-  # vpn-down without vpn-up only prints "nothing to clean up".
+  # The shared actions (vpn-up, vpn-down, notify-telegram) come from a checkout of the owner's 1_mvp_infra
+  # made with INFRA_READ_TOKEN: a public copy of this repository cannot use actions from a private one.
+  # The probe checks that checkout once, before anything is built or touched.
   probe:
     name: Probe (shared VPN actions)
     needs: preflight
     runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
     steps:
-      - name: Resolve the shared actions from 1_mvp_infra@env/dev
-        uses: OlegShevtsov1/1_mvp_infra/.github/actions/vpn-down@env/dev
-
-      - name: Check that vpn-up exists next to vpn-down
+      - name: Check that INFRA_READ_TOKEN is set
+        env:
+          INFRA_READ_TOKEN: ${{ secrets.INFRA_READ_TOKEN }}
         run: |
-          actions_dir="$(dirname "${RUNNER_WORKSPACE}")/_actions/OlegShevtsov1/1_mvp_infra"
-          if [[ -z "$(find "${actions_dir}" -path '*/.github/actions/vpn-up/action.yml' 2>/dev/null)" ]]; then
-            echo "::error::vpn-up is missing on OlegShevtsov1/1_mvp_infra@env/dev (I4a not merged)"
+          if [[ -z "${INFRA_READ_TOKEN}" ]]; then
+            echo "::error::INFRA_READ_TOKEN is not set: the shared actions cannot be checked out from ${GITHUB_REPOSITORY_OWNER}/1_mvp_infra (see README \"Dev deploy\")"
             exit 1
           fi
-          echo "vpn-up and vpn-down are available"
+          echo "INFRA_READ_TOKEN is set"
+
+      - name: Check out the shared actions from 1_mvp_infra@env/dev
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/1_mvp_infra
+          ref: env/dev
+          path: infra-helpers
+          token: ${{ secrets.INFRA_READ_TOKEN }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions
+            scripts
+            host
+            projects
+
+      - name: Check that vpn-up, vpn-down and notify-telegram are there
+        run: |
+          missing=()
+          for name in vpn-up vpn-down notify-telegram; do
+            [[ -f "infra-helpers/.github/actions/${name}/action.yml" ]] || missing+=("${name}")
+          done
+          if (( ${#missing[@]} > 0 )); then
+            echo "::error::${GITHUB_REPOSITORY_OWNER}/1_mvp_infra@env/dev, checked out with INFRA_READ_TOKEN, has no ${missing[*]}"
+            exit 1
+          fi
+          echo "vpn-up, vpn-down and notify-telegram are available"
 
   deploy:
     name: Deploy (VPN + Kamal)
@@ -142,10 +188,25 @@ jobs:
     env:
       TAG: ${{ needs.guard.outputs.tag }}
       VERSION: ${{ needs.guard.outputs.version }}
+      SOURCE_SHA: ${{ needs.guard.outputs.source_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Check out the shared actions from 1_mvp_infra@env/dev
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/1_mvp_infra
+          ref: env/dev
+          path: infra-helpers
+          token: ${{ secrets.INFRA_READ_TOKEN }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions
+            scripts
+            host
+            projects
 
       # Before vpn-up: everything slow happens outside the VPN lock window.
       - uses: ruby/setup-ruby@v1
@@ -186,7 +247,7 @@ jobs:
           echo "SSH_AUTH_SOCK=${SSH_AUTH_SOCK}" >> "${GITHUB_ENV}"
 
       - name: VPN up
-        uses: OlegShevtsov1/1_mvp_infra/.github/actions/vpn-up@env/dev
+        uses: ./infra-helpers/.github/actions/vpn-up
         with:
           ovpn: ${{ secrets.VPN_CI_OVPN }}
           ci-vpn-ip: ${{ secrets.CI_VPN_IP }}
@@ -216,11 +277,11 @@ jobs:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           SENTRY_ALLOWED_FE_DSN: ${{ secrets.SENTRY_ALLOWED_FE_DSN }}
           SMOKE_TOKEN: ${{ secrets.SMOKE_TOKEN }}
-        run: deploy/deploy.sh prod "${TAG}"
+        run: deploy/deploy.sh prod "${TAG}" ${SOURCE_SHA:+"${SOURCE_SHA}"}
 
       - name: VPN down
         if: always()
-        uses: OlegShevtsov1/1_mvp_infra/.github/actions/vpn-down@env/dev
+        uses: ./infra-helpers/.github/actions/vpn-down
 
   # Polls the public URL without the VPN; the shared VPN lock is held only for the one GlitchTip
   # query at the end, so other deploys are not blocked for 10 minutes.
@@ -239,6 +300,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check out the shared actions from 1_mvp_infra@env/dev
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/1_mvp_infra
+          ref: env/dev
+          path: infra-helpers
+          token: ${{ secrets.INFRA_READ_TOKEN }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions
+            scripts
+            host
+            projects
+
       - name: Watch /health for 10 minutes
         id: health
         run: deploy/release_watch.sh health "${VERSION}" >> "${GITHUB_OUTPUT}"
@@ -249,7 +324,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: VPN up
-        uses: OlegShevtsov1/1_mvp_infra/.github/actions/vpn-up@env/dev
+        uses: ./infra-helpers/.github/actions/vpn-up
         with:
           ovpn: ${{ secrets.VPN_CI_OVPN }}
           ci-vpn-ip: ${{ secrets.CI_VPN_IP }}
@@ -269,7 +344,7 @@ jobs:
 
       - name: VPN down
         if: always()
-        uses: OlegShevtsov1/1_mvp_infra/.github/actions/vpn-down@env/dev
+        uses: ./infra-helpers/.github/actions/vpn-down
 
       - name: Verdict
         id: verdict
@@ -283,7 +358,7 @@ jobs:
 
       - name: Notify (Telegram)
         if: always()
-        uses: OlegShevtsov1/1_mvp_infra/.github/actions/notify-telegram@env/dev
+        uses: ./infra-helpers/.github/actions/notify-telegram
         env:
           TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN }}
           TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID }}
@@ -308,6 +383,7 @@ jobs:
         id: summarize
         env:
           VERSION: ${{ needs.guard.outputs.tag || inputs.version }}
+          MODE: ${{ vars.MIRROR == 'true' && 'mirror' || 'primary' }}
           GUARD: ${{ needs.guard.result }}
           PREFLIGHT: ${{ needs.preflight.result }}
           PROBE: ${{ needs.probe.result }}
@@ -316,9 +392,15 @@ jobs:
         run: |
           explain() {
             case "$1" in
-              guard) echo 'refused: workflow ref is not main, confirm/environment invalid, or the version is not an annotated release tag vX.Y.Z on main (a bare sha is refused); nothing touched prod' ;;
+              guard)
+                if [[ "${MODE}" == 'mirror' ]]; then
+                  echo 'refused (mirror mode): workflow ref is not main, confirm/environment invalid, source_sha is not 40 hex, the version is not an annotated release tag vX.Y.Z on main, or MIRROR_SOURCE.json does not record that source_sha for it; nothing touched prod'
+                else
+                  echo 'refused (primary mode): workflow ref is not main, confirm/environment invalid, or the version is not an annotated release tag vX.Y.Z on main (a bare sha or a source_sha is refused); nothing touched prod'
+                fi
+                ;;
               preflight) echo 'required secrets are missing: see the preflight error for their names and README "Prod deploy"' ;;
-              probe) echo "actions from OlegShevtsov1/1_mvp_infra@env/dev unavailable: I4a not merged to env/dev, or 1_mvp_infra Actions access is not 'user'" ;;
+              probe) echo "the shared actions could not be checked out from ${GITHUB_REPOSITORY_OWNER}/1_mvp_infra@env/dev: INFRA_READ_TOKEN is missing, expired or cannot read that repository (see README \"Dev deploy\")" ;;
               deploy) echo 'the image check, the VPN, Kamal, the health check or the swagger smoke failed: see the deploy log' ;;
             esac
           }
@@ -339,10 +421,10 @@ jobs:
             fi
           done
           if [[ -n "${failed}" ]]; then
-            message="❌ Kamal Deploy prod ${VERSION:0:16} failed in ${failed}: $(explain "${failed}") ${RUN_URL}"
+            message="❌ Kamal Deploy prod ${VERSION:0:16} (${MODE}) failed in ${failed}: $(explain "${failed}") ${RUN_URL}"
             echo "::error::${failed} failed: $(explain "${failed}")"
           else
-            message="✅ Kamal Deploy prod ${VERSION:0:16} succeeded ${RUN_URL}"
+            message="✅ Kamal Deploy prod ${VERSION:0:16} (${MODE}) succeeded ${RUN_URL}"
           fi
           echo "message=${message}" >> "${GITHUB_OUTPUT}"
           echo "FAILED_JOB=${failed}" >> "${GITHUB_ENV}"
@@ -358,7 +440,23 @@ jobs:
     runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
     environment: prod
     steps:
-      - uses: OlegShevtsov1/1_mvp_infra/.github/actions/notify-telegram@env/dev
+      - name: Check out the shared actions from 1_mvp_infra@env/dev
+        id: infra
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/1_mvp_infra
+          ref: env/dev
+          path: infra-helpers
+          token: ${{ secrets.INFRA_READ_TOKEN }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions
+            scripts
+            host
+            projects
+
+      - uses: ./infra-helpers/.github/actions/notify-telegram
         env:
           TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN }}
           TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID }}
@@ -366,3 +464,17 @@ jobs:
         with:
           topic: PILOT_PROD_ALERTS
           message: ${{ needs.report.outputs.message || format('❌ Kamal Deploy could not report its result {0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+
+      - name: Send the message without the shared actions
+        if: "!cancelled() && steps.infra.outcome == 'failure'"
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID }}
+          THREAD_ID: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_THREAD_ID }}
+          MESSAGE: ${{ needs.report.outputs.message || format('❌ Kamal Deploy could not report its result {0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+        run: |
+          echo "::error::the shared actions could not be checked out from ${GITHUB_REPOSITORY_OWNER}/1_mvp_infra@env/dev: INFRA_READ_TOKEN is missing, expired or cannot read that repository; sending the message straight to Telegram"
+          args=(--data-urlencode "chat_id=${CHAT_ID}" --data-urlencode "text=${MESSAGE}")
+          [[ -z "${THREAD_ID}" ]] || args+=(--data-urlencode "message_thread_id=${THREAD_ID}")
+          curl -sS -m 20 --fail -o /dev/null -K - "${args[@]}" <<< "url = \"https://api.telegram.org/bot${BOT_TOKEN}/sendMessage\""
+          exit 1

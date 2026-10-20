@@ -27,6 +27,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check out the shared actions from 1_mvp_infra@env/dev
+        id: infra
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/1_mvp_infra
+          ref: env/dev
+          path: infra-helpers
+          token: ${{ secrets.INFRA_READ_TOKEN }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions
+            scripts
+            host
+            projects
+
       - name: Check the commit's pull request
         id: check
         env:
@@ -37,7 +53,7 @@ jobs:
 
       - name: Alert PILOT_DEV_ALERTS
         if: failure() && steps.check.outcome == 'failure'
-        uses: OlegShevtsov1/1_mvp_infra/.github/actions/notify-telegram@env/dev
+        uses: ./infra-helpers/.github/actions/notify-telegram
         env:
           TELEGRAM_PILOT_DEV_ALERTS_BOT_TOKEN: ${{ secrets.TELEGRAM_PILOT_DEV_ALERTS_BOT_TOKEN }}
           TELEGRAM_PILOT_DEV_ALERTS_CHAT_ID: ${{ secrets.TELEGRAM_PILOT_DEV_ALERTS_CHAT_ID }}
@@ -45,3 +61,17 @@ jobs:
         with:
           topic: PILOT_DEV_ALERTS
           message: ${{ steps.check.outputs.message }} — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      - name: Send the message without the shared actions
+        if: "!cancelled() && steps.infra.outcome == 'failure'"
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_PILOT_DEV_ALERTS_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_PILOT_DEV_ALERTS_CHAT_ID }}
+          THREAD_ID: ${{ secrets.TELEGRAM_PILOT_DEV_ALERTS_THREAD_ID }}
+          MESSAGE: ${{ steps.check.outputs.message || format('⚠️ {0} cannot send its alerts, INFRA_READ_TOKEN could not check out the shared actions', github.workflow) }} — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          echo "::error::the shared actions could not be checked out from ${GITHUB_REPOSITORY_OWNER}/1_mvp_infra@env/dev: INFRA_READ_TOKEN is missing, expired or cannot read that repository; sending the message straight to Telegram"
+          args=(--data-urlencode "chat_id=${CHAT_ID}" --data-urlencode "text=${MESSAGE}")
+          [[ -z "${THREAD_ID}" ]] || args+=(--data-urlencode "message_thread_id=${THREAD_ID}")
+          curl -sS -m 20 --fail -o /dev/null -K - "${args[@]}" <<< "url = \"https://api.telegram.org/bot${BOT_TOKEN}/sendMessage\""
+          exit 1

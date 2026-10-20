@@ -53,7 +53,8 @@ exact `run:` lines of CI steps (`.github/workflows/rails-test.yml`, `rails-lint.
   `Type: <feat|fix|chore|docs|refactor|test|ci>`, checked by `pr-conventions-check`. Features reach `develop` by
   squash PR, merged by the factory; hotfixes go to `main` directly and are merged back into `develop`. PRs into
   `main` (the release PR `develop` → `main` and hotfixes) are merged by the operator by hand. `develop-guard`
-  alerts like `main-guard` for `develop`.
+  alerts like `main-guard` for `develop` (skipped on the public mirror, `vars.MIRROR == 'true'`, whose `develop`
+  takes direct sync commits — decision 51).
 - A PR whose `Type:` is `feat` or `fix` adds an entry under `[Unreleased]` in `CHANGELOG.md` (`changelog-check`;
   label `skip-changelog` only for trivia). Releases are annotated tags `vX.Y.Z` whose number
   `scripts/next-version.sh` computes from the `Type:` lines; see README for the release and hotfix flow.

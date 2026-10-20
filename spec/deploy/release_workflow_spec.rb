@@ -54,7 +54,7 @@ RSpec.describe '.github/workflows/release.yml' do
   end
 
   it 'sends ✅ or ❌ to the prod alerts topic, whatever happened' do
-    telegram = notify.fetch('steps').find { |candidate| candidate['uses'].to_s.include?('/notify-telegram@env/dev') }
+    telegram = notify.fetch('steps').find { |candidate| candidate['uses'].to_s == './infra-helpers/.github/actions/notify-telegram' }
     expect(notify).to include('environment' => 'prod', 'if' => 'always()')
     expect(Array(notify.fetch('needs'))).to eq(%w[release])
     expect(telegram.dig('with', 'topic')).to eq('PILOT_PROD_ALERTS')

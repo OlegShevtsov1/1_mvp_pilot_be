@@ -72,8 +72,8 @@ RSpec.describe 'prod workflows' do
 
     it 'connects the VPN before Kamal and always disconnects it' do
       uses = jobs.fetch(job_name).fetch('steps').map { |s| s['uses'].to_s }
-      up = uses.index { |u| u.end_with?('/vpn-up@env/dev') }
-      down = uses.index { |u| u.end_with?('/vpn-down@env/dev') }
+      up = uses.index { |u| u == './infra-helpers/.github/actions/vpn-up' }
+      down = uses.index { |u| u == './infra-helpers/.github/actions/vpn-down' }
       run = jobs.fetch(job_name).fetch('steps').index { |s| s['name'] == run_step }
 
       expect([ up, run, down ]).to all(be_a(Integer))
@@ -83,7 +83,7 @@ RSpec.describe 'prod workflows' do
     end
 
     it 'passes the mirror VPN client inputs to every vpn-up step' do
-      vpn_ups = jobs.values.flat_map { |job| job.fetch('steps') { [] } }.select { |s| s['uses'].to_s.end_with?('/vpn-up@env/dev') }
+      vpn_ups = jobs.values.flat_map { |job| job.fetch('steps') { [] } }.select { |s| s['uses'].to_s == './infra-helpers/.github/actions/vpn-up' }
 
       expect(vpn_ups).not_to be_empty
       vpn_ups.each { |s| expect(s.fetch('with').to_a).to eq(vpn_up_inputs), s['name'] }
@@ -103,14 +103,15 @@ RSpec.describe 'prod workflows' do
     let(:jobs) { workflow.fetch('jobs') }
 
     it 'connects the VPN in deploy and release-watch only' do
-      with_vpn = jobs.select { |_, job| job.fetch('steps') { [] }.any? { |s| s['uses'].to_s.end_with?('/vpn-up@env/dev') } }
+      with_vpn = jobs.select { |_, job| job.fetch('steps') { [] }.any? { |s| s['uses'].to_s == './infra-helpers/.github/actions/vpn-up' } }
       expect(with_vpn.keys).to contain_exactly('deploy', 'release-watch')
     end
 
-    it 'takes exactly environment (prod only), version and confirm' do
+    it 'takes exactly environment (prod only), version, an optional source_sha and confirm' do
       inputs = workflow.dig('on', 'workflow_dispatch', 'inputs')
-      expect(inputs.keys).to eq(%w[environment version confirm])
+      expect(inputs.keys).to eq(%w[environment version source_sha confirm])
       expect(inputs.dig('environment', 'options')).to eq(%w[prod])
+      expect(inputs.fetch('source_sha')).to include('type' => 'string', 'required' => false)
     end
 
     it 'checks the inputs with deploy/prod_guard.sh deploy and the tag with deploy/release_tag_check.sh' do
@@ -122,16 +123,61 @@ RSpec.describe 'prod workflows' do
       expect(step(guard, 'Check the ref and the inputs')['run']).to include('deploy/prod_guard.sh deploy')
       expect(tag_check.fetch('env')).to include('TAG' => '${{ steps.inputs.outputs.tag }}')
       expect(tag_check.fetch('run')).to include('deploy/release_tag_check.sh "${TAG}"', 'GITHUB_OUTPUT')
-      expect(guard.fetch('outputs')).to include('tag', 'version')
+      expect(step(guard, 'Check the ref and the inputs').fetch('env')).to include(
+        'MIRROR' => "${{ vars.MIRROR == 'true' }}", 'SOURCE_SHA' => '${{ inputs.source_sha }}'
+      )
+      expect(tag_check).not_to have_key('if')
+      expect(guard.fetch('outputs')).to include(
+        'tag' => '${{ steps.inputs.outputs.tag }}',
+        'version' => '${{ steps.mirror.outputs.version || steps.tag.outputs.version }}',
+        'source_sha' => '${{ steps.inputs.outputs.source_sha }}'
+      )
     end
 
-    it 'deploys the tag with deploy/deploy.sh prod' do
+    it 'checks MIRROR_SOURCE.json with deploy/mirror_source_check.sh only in mirror mode' do
+      guard = jobs.fetch('guard')
+      names = guard.fetch('steps').map { |s| s['name'] }
+      mirror = step(guard, 'Check the version and source_sha against MIRROR_SOURCE.json')
+
+      expect(mirror.fetch('id')).to eq('mirror')
+      expect(names.index(mirror['name'])).to be > names.index('Check that the version is an annotated release tag on main')
+      expect(mirror.fetch('env')).to include('TAG' => '${{ steps.inputs.outputs.tag }}',
+                                             'SOURCE_SHA' => '${{ steps.inputs.outputs.source_sha }}')
+      expect(mirror.fetch('run')).to include('deploy/mirror_source_check.sh "${TAG}" "${SOURCE_SHA}"', 'GITHUB_OUTPUT')
+      expect(GithubExpression.evaluate(mirror.fetch('if'), 'vars' => { 'MIRROR' => 'true' })).to be(true)
+      [ {}, { 'MIRROR' => 'false' } ].each do |vars|
+        expect(GithubExpression.evaluate(mirror.fetch('if'), 'vars' => vars)).to be(false), vars.inspect
+      end
+    end
+
+    it 'deploys the tag, and on the mirror its source_sha, with deploy/deploy.sh prod' do
       deploy = jobs.fetch('deploy')
       checkout = deploy.fetch('steps').find { |s| s['uses'].to_s.start_with?('actions/checkout@') }
 
       expect(checkout.fetch('with')).to include('fetch-depth' => 0)
-      expect(deploy.fetch('env')).to include('TAG' => '${{ needs.guard.outputs.tag }}')
-      expect(step(deploy, 'Deploy').fetch('run')).to eq('deploy/deploy.sh prod "${TAG}"')
+      expect(deploy.fetch('env')).to include('TAG' => '${{ needs.guard.outputs.tag }}',
+                                             'SOURCE_SHA' => '${{ needs.guard.outputs.source_sha }}')
+      expect(step(deploy, 'Deploy').fetch('run')).to eq('deploy/deploy.sh prod "${TAG}" ${SOURCE_SHA:+"${SOURCE_SHA}"}')
+    end
+
+    it 'never builds an image: prod only promotes what Dev Deploy built' do
+      jobs.each_value do |job|
+        job.fetch('steps') { [] }.each do |s|
+          expect(s['uses'].to_s).not_to match(%r{docker/(build-push|setup-buildx)-action}), s['name']
+          expect(s['run'].to_s).not_to match(/docker (buildx )?build|kamal build/), s['name']
+        end
+      end
+    end
+
+    it 'names the mode in the guard job and in the report' do
+      name = jobs.fetch('guard').fetch('name')
+      expect(GithubExpression.interpolate(name, 'vars' => { 'MIRROR' => 'true' })).to start_with('Guard, mirror mode')
+      [ {}, { 'MIRROR' => 'false' } ].each do |vars|
+        expect(GithubExpression.interpolate(name, 'vars' => vars)).to eq('Guard, primary mode (ref, confirm, version)'), vars.inspect
+      end
+      summarize = step(jobs.fetch('report'), 'Summarize the job results')
+      expect(summarize.fetch('env')).to include('MODE' => "${{ vars.MIRROR == 'true' && 'mirror' || 'primary' }}")
+      expect(summarize.fetch('run')).to include('MIRROR_SOURCE.json', '${MODE}')
     end
 
     describe 'release-watch' do
@@ -150,8 +196,8 @@ RSpec.describe 'prod workflows' do
 
       it 'watches /health before taking the VPN, and always releases it' do
         uses = watch_steps.map { |s| s['uses'].to_s }
-        up = uses.index { |u| u.end_with?('/vpn-up@env/dev') }
-        down = uses.index { |u| u.end_with?('/vpn-down@env/dev') }
+        up = uses.index { |u| u == './infra-helpers/.github/actions/vpn-up' }
+        down = uses.index { |u| u == './infra-helpers/.github/actions/vpn-down' }
 
         expect(step(watch, 'Watch /health for 10 minutes').fetch('run')).to include('deploy/release_watch.sh health')
         expect(index('Watch /health for 10 minutes')).to be < up
@@ -170,7 +216,7 @@ RSpec.describe 'prod workflows' do
 
       it 'always reports ✅ or ❌ to the prod alerts topic' do
         verdict = step(watch, 'Verdict')
-        telegram = watch_steps.find { |s| s['uses'].to_s.include?('/notify-telegram@env/dev') }
+        telegram = watch_steps.find { |s| s['uses'].to_s == './infra-helpers/.github/actions/notify-telegram' }
 
         expect(verdict.fetch('run')).to include('deploy/release_watch.sh verdict')
         expect(verdict['if']).to eq('always()')

@@ -4,6 +4,8 @@
 # Env: REF (github.ref), CONFIRM, and ENVIRONMENT + VERSION (deploy) or ACTION + VERSION (manage).
 # deploy: VERSION must be a release tag vX.Y.Z, never a sha (R-C9); prints tag=<tag>, and
 # deploy/release_tag_check.sh then checks that the tag is annotated and on main.
+# MIRROR=true (the workflow's reading of vars.MIRROR) is mirror mode: SOURCE_SHA must be the 40-hex
+# primary commit of the tag and is printed as source_sha=<sha>; the primary refuses a SOURCE_SHA.
 # manage: prints version=sha-<40 hex> (or version= without one), the rollback target on the host.
 # Output is ready for GITHUB_OUTPUT.
 set -euo pipefail
@@ -31,7 +33,15 @@ case "$MODE" in
       fail 'a bare sha is refused: prod deploys only a release tag vX.Y.Z (annotated, on main)'
     [[ "${VERSION:-}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] ||
       fail "version must be a release tag vX.Y.Z (got '${VERSION:-}')"
+    if [[ "${MIRROR:-}" == 'true' ]]; then
+      [[ "${SOURCE_SHA:-}" =~ ^[0-9a-f]{40}$ ]] ||
+        fail "mirror mode (MIRROR=true): source_sha must be the 40-hex primary commit of ${VERSION} (got '${SOURCE_SHA:-}')"
+    else
+      [[ -z "${SOURCE_SHA:-}" ]] ||
+        fail 'primary mode: source_sha is only for the mirror (MIRROR=true); the primary deploys the commit of its own tag'
+    fi
     echo "tag=${VERSION}"
+    [[ "${MIRROR:-}" != 'true' ]] || echo "source_sha=${SOURCE_SHA}"
     ;;
   manage)
     case "${ACTION:-}" in

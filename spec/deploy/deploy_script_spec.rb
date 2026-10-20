@@ -177,6 +177,52 @@ RSpec.describe 'deploy/deploy.sh' do
       end
     end
 
+    describe 'from the mirror (decision 43)' do
+      let(:source_sha) { 'b' * 40 }
+
+      def mirror_source(primary_sha)
+        JSON.generate('repo' => 'owner/app', 'source_ref' => 'main', 'source_sha' => primary_sha,
+                      'mirror_sha' => DeploySandbox::SHA, 'synced_at' => '2026-10-20T10:00:00Z',
+                      'tags' => [ { 'tag' => 'v0.1.0', 'primary_sha' => primary_sha, 'mirror_sha' => DeploySandbox::SHA } ])
+      end
+
+      it 'promotes and deploys sha-<source_sha> recorded in MIRROR_SOURCE.json, never the mirror commit' do
+        files = dev_image_files(source_sha).merge('MIRROR_SOURCE.json' => mirror_source(source_sha))
+        run_script('deploy.sh', 'prod', 'v0.1.0', source_sha, env: prod_env, release: source_sha, files: files) do |output, status, root|
+          expect(status).to be_success, output
+          expect(crane_calls(root)).to include("mutate #{repo}:sha-#{source_sha} --label service=#{name} -t #{repo}:prod-sha-#{source_sha}")
+          expect(kamal_calls(root).last).to eq("exec kamal setup --skip-push --version prod-sha-#{source_sha} -c config/deploy.yml")
+          expect(crane_calls(root)).not_to include(/#{DeploySandbox::SHA}/o)
+        end
+      end
+
+      it 'refuses a source_sha MIRROR_SOURCE.json does not record, before touching anything' do
+        files = dev_image_files(source_sha).merge('MIRROR_SOURCE.json' => mirror_source('c' * 40))
+        run_script('deploy.sh', 'prod', 'v0.1.0', source_sha, env: prod_env, files: files) do |output, status, root|
+          expect(status.exitstatus).to eq(1)
+          expect(output).to include('does not match')
+          expect(kamal_calls(root)).to be_empty
+          expect(crane_calls(root)).to be_empty
+        end
+      end
+
+      it 'refuses when MIRROR_SOURCE.json is missing, before touching anything' do
+        run_script('deploy.sh', 'prod', 'v0.1.0', source_sha, env: prod_env, files: dev_image_files(source_sha)) do |output, status, root|
+          expect(status.exitstatus).to eq(1)
+          expect(output).to include('MIRROR_SOURCE.json')
+          expect(kamal_calls(root)).to be_empty
+          expect(crane_calls(root)).to be_empty
+        end
+      end
+
+      it "without a source_sha deploys the tag's own commit and ignores MIRROR_SOURCE.json" do
+        run_prod(files: { 'MIRROR_SOURCE.json' => mirror_source(source_sha) }) do |output, status, root|
+          expect(status).to be_success, output
+          expect(crane_calls(root)).to include("mutate #{repo}:#{version} --label service=#{name} -t #{repo}:#{prod_version}")
+        end
+      end
+    end
+
     it 'checks the tag as published on origin, together with main' do
       run_prod do |output, status, root|
         expect(status).to be_success, output

@@ -134,7 +134,8 @@ branch has a newer head or no longer exists by the time the VPN lock is taken.
 1. **Gate** – deploys once per commit, from whichever of the two workflows finished last
    (`deploy/dev_deploy_gate.sh`).
 2. **Preflight** – fails fast, naming every missing secret (names only, never values).
-3. **Probe** – checks that the shared `vpn-up`/`vpn-down` actions can be used.
+3. **Probe** – checks out the shared `vpn-up`/`vpn-down`/`notify-telegram` actions from the owner's
+   `1_mvp_infra` with `INFRA_READ_TOKEN` and checks that all three are there.
 4. **Build once** – builds the image `sha-<git sha>` (with `APP_RELEASE` baked in) and pushes it
    to ECR; an image that already exists is not rebuilt. The summary records its digest.
 5. **Deploy** – `vpn-up` → `deploy/deploy.sh dev sha-<sha>` (Kamal 2, `config/deploy.dev.yml`) →
@@ -187,11 +188,18 @@ kamal-proxy on the dev host is shared with another deployment. Always pass the c
 
 Secrets (names only):
 
-- repository: `AWS_ROLE_ARN`, `VPN_CI_OVPN`, `SRV_DEPLOY_SSH_KEY`
+- repository: `AWS_ROLE_ARN`, `VPN_CI_OVPN`, `SRV_DEPLOY_SSH_KEY`, `INFRA_READ_TOKEN`
 - environment `dev`: `SECRET_KEY_BASE`, `POSTGRES_PASSWORD` (URL-safe, never changed after the
   first deploy), `SENTRY_DSN`, `SENTRY_ALLOWED_FE_DSN`, `SMOKE_TOKEN`,
   `TELEGRAM_PILOT_DEV_ALERTS_BOT_TOKEN`, `TELEGRAM_PILOT_DEV_ALERTS_CHAT_ID`,
   `TELEGRAM_PILOT_DEV_ALERTS_THREAD_ID`
+
+`INFRA_READ_TOKEN` (repository secret) is a token that can only read the owner's `1_mvp_infra`. Every job
+that needs `vpn-up`, `vpn-down` or `notify-telegram` first checks out `1_mvp_infra` at `env/dev` (only
+`.github/actions`, `scripts`, `host`, `projects` and the top-level files) into `infra-helpers/` and runs the
+actions from there, because a public copy of this repository cannot use actions from a private repository.
+Without it, the preflight and the Probe of Dev Deploy, Kamal Deploy and Kamal Manage fail and name it; the
+Notify jobs and the guards then send their Telegram message straight to the Bot API and fail naming it.
 
 The shared mechanism (kamal-proxy, the `vpn-up`/`vpn-down` actions, the CI SSH key) is documented in the
 private infrastructure repository.
@@ -282,7 +290,7 @@ PROD_VPN_IP=<prod VPN address> deploy/manage.sh status|logs|restart
 
 Secrets (names only):
 
-- repository: `AWS_ROLE_ARN`, `VPN_CI_OVPN`
+- repository: `AWS_ROLE_ARN`, `VPN_CI_OVPN`, `INFRA_READ_TOKEN`
 - environment `prod`: `PROD_VPN_IP`, `PROD_SSH_KEY`, `SECRET_KEY_BASE`, `POSTGRES_PASSWORD`
   (URL-safe, never changed after the first deploy), `SENTRY_DSN`, `SENTRY_ALLOWED_FE_DSN`,
   `SMOKE_TOKEN`, `TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN`, `TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID`,
@@ -350,7 +358,7 @@ refactor and test need no entry. `scripts/release-notes.sh vX.Y.Z` prints a vers
 as published on origin (a local tag of the same name is replaced by the published one), on a commit
 in `main`'s history whose image Dev Deploy built. A bare sha, a lightweight tag or a tag off `main`
 is refused before anything touches prod. A rollback target stays a sha: it is a version still on
-the host.
+the host. On the mirror `Kamal Deploy` also needs `source_sha` (below).
 
 **release-watch.** After every successful prod deploy, the `release-watch` job of `Kamal Deploy`
 polls `https://<PROJECT_ZONE>/health` every 30 seconds for 10 minutes (each check must report the
@@ -385,6 +393,24 @@ PROD_VPN_IP=<prod VPN address> deploy/rollback.sh prod [sha-<sha>]      # consol
    by the operator **with a merge commit** (a squash would drop `<H>` from `develop`'s history, and
    the next version would not see the hotfix tag). `TDD check` skips the commits already on `main`.
 
+**Prod from the mirror (decision 43).** From v0.2.0 prod deploys only from the public mirror; this
+repository still builds (Dev Deploy, build once) and tags the release. Runbook:
+
+1. Release on the primary as in **Release flow** steps 1–4 (tag `vX.Y.Z` on `<D>`).
+2. `publish-mirror.sh` (in `1_mvp_sdlc`) syncs the primary `main` to the mirror through its `develop`
+   → PR → `main` (decision 51), puts the same tag on the mirror `main` and records
+   `{tag, primary_sha, mirror_sha}` in `MIRROR_SOURCE.json` at the mirror's root.
+3. On the mirror:
+   `gh workflow run "Kamal Deploy" --ref main -f environment=prod -f version=vX.Y.Z -f source_sha=<D> -f confirm=prod`.
+   The guard refuses unless `MIRROR_SOURCE.json` records `<D>` for that tag and the tag is annotated
+   and on the mirror `main`; the image `sha-<D>` is promoted, never built.
+4. `release-watch` runs on the mirror (✅/❌ to the prod alerts topic); roll back with `Kamal Manage` on
+   the mirror (`prod-previous` or a sha), as above.
+
+The mode is the repository variable `MIRROR`: on the primary (unset) `source_sha` is refused; on the
+mirror (`MIRROR=true`) `develop-guard` is skipped and `main-guard` still runs. A hotfix takes steps
+2–4 for its PATCH tag.
+
 **Published tags are never moved or deleted.** `.githooks/pre-push` refuses a push that deletes or
 moves a `v*` tag on the remote (`git push --force` of a moved tag, `git push --delete origin v*`,
 pushing the deletion after `git tag -d`). Install it in every clone:
@@ -406,6 +432,10 @@ Three GitHub Actions workflows run the checks: `Rails Tests` on pull requests in
 `develop`, `Rails CI` on every pull request, both on pushes to `main`, `develop` and `hotfix/*`,
 and `Manual Rails CI` on demand. RSpec, RuboCop, Brakeman, bundler-audit,
 gitleaks and actionlint (workflow files) are all blocking.
+`Rails CI` also runs `scripts/check-public-repo.sh` (blocking, and run by the mirror publish
+before publishing): tracked files must not contain internal IPs or hostnames, AWS account or
+Route53 zone IDs, Trello, Notion or Telegram links and IDs, or local home paths; it prints only
+`file:line`, and its documented exceptions are in the script.
 
 `TDD check` runs on every pull request: the first commit must be `test(<scope>)` (condition 1), it
 must fail `bundle exec rspec` with at least one failing example (a file that does not load is not
