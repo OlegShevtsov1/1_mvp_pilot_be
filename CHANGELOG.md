@@ -20,10 +20,18 @@ its entry under `[Unreleased]` (checked by `changelog-check`); a release moves t
 
 ### Fixed
 
-- Swagger UI "Servers" shows the origin the docs were opened on (behind kamal-proxy: the forwarded https
-  origin) instead of always `http://localhost:3000` (PILOT-110).
+- `bin/wait-dev-deploy` finds the Dev Deploy run by the sha it deploys (run title or Gate log) instead of the
+  `main` branch GitHub reports for `workflow_run` runs, so a deployed `develop` merge no longer fails as
+  "superseded by a newer main commit" (PILOT-116).
 
 ### Security
+
+## [0.1.1] - 2026-10-20
+
+### Fixed
+
+- Swagger UI "Servers" shows the origin the docs were opened on (behind kamal-proxy: the forwarded https
+  origin) instead of always `http://localhost:3000` (PILOT-110, backported by PILOT-121).
 
 ## [0.1.0] - 2026-10-16
 

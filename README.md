@@ -126,9 +126,9 @@ docker exec -it pilot-app-1 /bin/bash    # Terminal access
 
 Every commit pushed to `develop` or a `hotfix/*` branch that both `Rails Tests` and `Rails CI`
 passed is deployed to the dev environment by the `Dev Deploy` workflow
-(`.github/workflows/dev-deploy.yml`). A commit on `main` is deployed only by dispatching the workflow
-on `main` (`gh workflow run dev-deploy.yml --ref main`), which `bin/wait-dev-deploy` does once for a
-factory merge into `main` that the automatic trigger did not deploy. A deploy is skipped when its
+(`.github/workflows/dev-deploy.yml`). A commit that the automatic trigger did not deploy is deployed
+by dispatching the workflow on the commit's own branch (`gh workflow run dev-deploy.yml --ref <branch>`),
+which `bin/wait-dev-deploy` does once; for a factory merge into `main` that branch is `main`. A deploy is skipped when its
 branch has a newer head or no longer exists by the time the VPN lock is taken.
 
 1. **Gate** – deploys once per commit, from whichever of the two workflows finished last
@@ -162,11 +162,15 @@ bin/wait-dev-deploy --rollback       # dispatches action=rollback and waits for 
 ```
 
 It waits for the Dev Deploy run that deploys the commit and exits 0 when its `Deploy or roll back`
-step succeeded, 1 when that run failed, was superseded by a newer `main` commit, Rails Tests or
-Rails CI failed, or it timed out, and 2 on a malformed sha. GitHub does not always create the
-second `workflow_run` run, so when both CI runs are green and no run for the commit is deploying,
-it dispatches Dev Deploy for `main` once (only while `main` is still that commit), prints a
-`warning:` line and waits for that run instead. `WAIT_DEV_DEPLOY_TIMEOUT` (seconds, default 1200),
+step succeeded, 1 when that run failed, a later Dev Deploy run deployed a commit that contains it
+(superseded), Rails Tests or Rails CI failed, or it timed out, and 2 on a malformed sha. GitHub
+reports every `workflow_run` run on `main`, so the script finds the run by its title
+`Dev Deploy sha-<sha>` (or, for older runs titled just `Dev Deploy`, by the `HEAD_SHA` in their Gate
+log); a run of the commit that did not deploy it is not the one it waits for. GitHub does not always
+create the second `workflow_run` run, so when both CI runs are green and no run for the commit is
+deploying, it dispatches Dev Deploy once on the commit's own branch (`develop`, `hotfix/*` or
+`main`, only while that branch is still the commit), prints a `warning:` line and waits for that
+run instead. `WAIT_DEV_DEPLOY_TIMEOUT` (seconds, default 1200),
 `WAIT_DEV_DEPLOY_INTERVAL` (15) and `WAIT_DEV_DEPLOY_GRACE` (120, how long to wait for the automatic
 trigger) tune it.
 
