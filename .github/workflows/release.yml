@@ -112,7 +112,23 @@ jobs:
     runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
     environment: prod
     steps:
-      - uses: OlegShevtsov1/1_mvp_infra/.github/actions/notify-telegram@env/dev
+      - name: Check out the shared actions from 1_mvp_infra@env/dev
+        id: infra
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/1_mvp_infra
+          ref: env/dev
+          path: infra-helpers
+          token: ${{ secrets.INFRA_READ_TOKEN }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions
+            scripts
+            host
+            projects
+
+      - uses: ./infra-helpers/.github/actions/notify-telegram
         env:
           TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN }}
           TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID }}
@@ -120,3 +136,17 @@ jobs:
         with:
           topic: PILOT_PROD_ALERTS
           message: ${{ needs.release.outputs.message || format('❌ Release could not report its result {0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+
+      - name: Send the message without the shared actions
+        if: "!cancelled() && steps.infra.outcome == 'failure'"
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID }}
+          THREAD_ID: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_THREAD_ID }}
+          MESSAGE: ${{ needs.release.outputs.message || format('❌ Release could not report its result {0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+        run: |
+          echo "::error::the shared actions could not be checked out from ${GITHUB_REPOSITORY_OWNER}/1_mvp_infra@env/dev: INFRA_READ_TOKEN is missing, expired or cannot read that repository; sending the message straight to Telegram"
+          args=(--data-urlencode "chat_id=${CHAT_ID}" --data-urlencode "text=${MESSAGE}")
+          [[ -z "${THREAD_ID}" ]] || args+=(--data-urlencode "message_thread_id=${THREAD_ID}")
+          curl -sS -m 20 --fail -o /dev/null -K - "${args[@]}" <<< "url = \"https://api.telegram.org/bot${BOT_TOKEN}/sendMessage\""
+          exit 1

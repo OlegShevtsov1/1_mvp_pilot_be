@@ -9,16 +9,22 @@ class GithubExpression
     new(expression, context).evaluate
   end
 
+  # The value of a ${{ }} interpolation, e.g. a job name, rather than its truthiness.
+  def self.interpolate(text, context)
+    text.gsub(/\$\{\{(.*?)\}\}/m) { new(Regexp.last_match(1), context).value }
+  end
+
   def initialize(expression, context)
     @tokens = expression.scan(TOKEN)
     @context = context
   end
 
   def evaluate
-    value = disjunction
-    raise ArgumentError, "unexpected #{@tokens.first.inspect}" unless @tokens.empty?
-
     truthy?(value)
+  end
+
+  def value
+    disjunction.tap { raise ArgumentError, "unexpected #{@tokens.first.inspect}" unless @tokens.empty? }
   end
 
   private

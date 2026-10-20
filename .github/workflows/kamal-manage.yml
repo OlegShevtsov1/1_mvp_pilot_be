@@ -73,6 +73,7 @@ jobs:
           VPN_CI_OVPN: ${{ secrets.VPN_CI_OVPN }}
           PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
           PROD_VPN_IP: ${{ secrets.PROD_VPN_IP }}
+          INFRA_READ_TOKEN: ${{ secrets.INFRA_READ_TOKEN }}
           SECRET_KEY_BASE: ${{ secrets.SECRET_KEY_BASE }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
@@ -87,7 +88,7 @@ jobs:
           # login inside deploy.sh; every other variable .kamal/secrets.prod reads is a secret.
           mapfile -t kamal_secrets < <(secret_names .kamal/secrets.prod | grep -vxE 'PROJECT_NAME|KAMAL_REGISTRY_PASSWORD')
           required=(
-            AWS_ROLE_ARN VPN_CI_OVPN PROD_SSH_KEY PROD_VPN_IP
+            AWS_ROLE_ARN VPN_CI_OVPN PROD_SSH_KEY PROD_VPN_IP INFRA_READ_TOKEN
             "${kamal_secrets[@]}"
             TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID TELEGRAM_PILOT_PROD_ALERTS_THREAD_ID
           )
@@ -101,25 +102,49 @@ jobs:
           fi
           echo "all required secrets are set: ${required[*]}"
 
-  # A uses: that cannot be resolved kills its job at "Set up job", before any step can explain
-  # why, so the shared actions are resolved here, in a job that touches nothing.
-  # vpn-down without vpn-up only prints "nothing to clean up".
+  # The shared actions (vpn-up, vpn-down, notify-telegram) come from a checkout of the owner's 1_mvp_infra
+  # made with INFRA_READ_TOKEN: a public copy of this repository cannot use actions from a private one.
+  # The probe checks that checkout once, before anything is built or touched.
   probe:
     name: Probe (shared VPN actions)
     needs: preflight
     runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
     steps:
-      - name: Resolve the shared actions from 1_mvp_infra@env/dev
-        uses: OlegShevtsov1/1_mvp_infra/.github/actions/vpn-down@env/dev
-
-      - name: Check that vpn-up exists next to vpn-down
+      - name: Check that INFRA_READ_TOKEN is set
+        env:
+          INFRA_READ_TOKEN: ${{ secrets.INFRA_READ_TOKEN }}
         run: |
-          actions_dir="$(dirname "${RUNNER_WORKSPACE}")/_actions/OlegShevtsov1/1_mvp_infra"
-          if [[ -z "$(find "${actions_dir}" -path '*/.github/actions/vpn-up/action.yml' 2>/dev/null)" ]]; then
-            echo "::error::vpn-up is missing on OlegShevtsov1/1_mvp_infra@env/dev (I4a not merged)"
+          if [[ -z "${INFRA_READ_TOKEN}" ]]; then
+            echo "::error::INFRA_READ_TOKEN is not set: the shared actions cannot be checked out from ${GITHUB_REPOSITORY_OWNER}/1_mvp_infra (see README \"Dev deploy\")"
             exit 1
           fi
-          echo "vpn-up and vpn-down are available"
+          echo "INFRA_READ_TOKEN is set"
+
+      - name: Check out the shared actions from 1_mvp_infra@env/dev
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/1_mvp_infra
+          ref: env/dev
+          path: infra-helpers
+          token: ${{ secrets.INFRA_READ_TOKEN }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions
+            scripts
+            host
+            projects
+
+      - name: Check that vpn-up, vpn-down and notify-telegram are there
+        run: |
+          missing=()
+          for name in vpn-up vpn-down notify-telegram; do
+            [[ -f "infra-helpers/.github/actions/${name}/action.yml" ]] || missing+=("${name}")
+          done
+          if (( ${#missing[@]} > 0 )); then
+            echo "::error::${GITHUB_REPOSITORY_OWNER}/1_mvp_infra@env/dev, checked out with INFRA_READ_TOKEN, has no ${missing[*]}"
+            exit 1
+          fi
+          echo "vpn-up, vpn-down and notify-telegram are available"
 
   # remove deletes the prod database volume, so it only runs after a checked backup. Until the
   # backup gate (I5) exists this job always fails, and remove stays disabled.
@@ -149,6 +174,20 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check out the shared actions from 1_mvp_infra@env/dev
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/1_mvp_infra
+          ref: env/dev
+          path: infra-helpers
+          token: ${{ secrets.INFRA_READ_TOKEN }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions
+            scripts
+            host
+            projects
 
       # Before vpn-up: everything slow happens outside the VPN lock window.
       - uses: ruby/setup-ruby@v1
@@ -180,7 +219,7 @@ jobs:
           echo "SSH_AUTH_SOCK=${SSH_AUTH_SOCK}" >> "${GITHUB_ENV}"
 
       - name: VPN up
-        uses: OlegShevtsov1/1_mvp_infra/.github/actions/vpn-up@env/dev
+        uses: ./infra-helpers/.github/actions/vpn-up
         with:
           ovpn: ${{ secrets.VPN_CI_OVPN }}
           ci-vpn-ip: ${{ secrets.CI_VPN_IP }}
@@ -223,7 +262,7 @@ jobs:
 
       - name: VPN down
         if: always()
-        uses: OlegShevtsov1/1_mvp_infra/.github/actions/vpn-down@env/dev
+        uses: ./infra-helpers/.github/actions/vpn-down
 
   report:
     name: Report
@@ -248,7 +287,7 @@ jobs:
             case "$1" in
               guard) echo 'refused: workflow ref is not main, or the action/confirm/version is invalid; nothing touched prod' ;;
               preflight) echo 'required secrets are missing: see the preflight error for their names and README "Prod deploy"' ;;
-              probe) echo "actions from OlegShevtsov1/1_mvp_infra@env/dev unavailable: I4a not merged to env/dev, or 1_mvp_infra Actions access is not 'user'" ;;
+              probe) echo "the shared actions could not be checked out from ${GITHUB_REPOSITORY_OWNER}/1_mvp_infra@env/dev: INFRA_READ_TOKEN is missing, expired or cannot read that repository (see README \"Dev deploy\")" ;;
               backup-gate) echo 'remove is disabled until the prod DB backup gate (I5) exists; nothing was removed' ;;
               manage) echo 'the VPN, Kamal or the health check failed: see the manage log' ;;
             esac
@@ -289,7 +328,23 @@ jobs:
     runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
     environment: prod
     steps:
-      - uses: OlegShevtsov1/1_mvp_infra/.github/actions/notify-telegram@env/dev
+      - name: Check out the shared actions from 1_mvp_infra@env/dev
+        id: infra
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/1_mvp_infra
+          ref: env/dev
+          path: infra-helpers
+          token: ${{ secrets.INFRA_READ_TOKEN }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions
+            scripts
+            host
+            projects
+
+      - uses: ./infra-helpers/.github/actions/notify-telegram
         env:
           TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN }}
           TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID }}
@@ -297,3 +352,17 @@ jobs:
         with:
           topic: PILOT_PROD_ALERTS
           message: ${{ needs.report.outputs.message || format('❌ Kamal Manage could not report its result {0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+
+      - name: Send the message without the shared actions
+        if: "!cancelled() && steps.infra.outcome == 'failure'"
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID }}
+          THREAD_ID: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_THREAD_ID }}
+          MESSAGE: ${{ needs.report.outputs.message || format('❌ Kamal Manage could not report its result {0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+        run: |
+          echo "::error::the shared actions could not be checked out from ${GITHUB_REPOSITORY_OWNER}/1_mvp_infra@env/dev: INFRA_READ_TOKEN is missing, expired or cannot read that repository; sending the message straight to Telegram"
+          args=(--data-urlencode "chat_id=${CHAT_ID}" --data-urlencode "text=${MESSAGE}")
+          [[ -z "${THREAD_ID}" ]] || args+=(--data-urlencode "message_thread_id=${THREAD_ID}")
+          curl -sS -m 20 --fail -o /dev/null -K - "${args[@]}" <<< "url = \"https://api.telegram.org/bot${BOT_TOKEN}/sendMessage\""
+          exit 1

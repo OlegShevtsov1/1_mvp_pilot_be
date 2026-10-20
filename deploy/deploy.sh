@@ -2,6 +2,8 @@
 # Deploy an image that is already in ECR with Kamal 2.
 # Usage: deploy/deploy.sh dev [sha-<40 hex>]   (the version defaults to sha-<HEAD>)
 #        deploy/deploy.sh prod vX.Y.Z           (a release tag: annotated, published, on main)
+#        deploy/deploy.sh prod vX.Y.Z <source_sha>   (on the mirror only: the image of the primary
+#                                                     commit MIRROR_SOURCE.json records for the tag)
 #
 # dev needs DEV_HOST, prod needs PROD_VPN_IP; both need the variables referenced in the
 # destination's .kamal/secrets.<dest>, an SSH agent holding a key accepted by the host, and AWS
@@ -18,7 +20,11 @@ source deploy/_common.sh
 
 select_destination "${1:-}"
 if [[ "$DESTINATION" == 'prod' ]]; then
-  VERSION="$(resolve_release_tag "${2:-}")"
+  if (( $# >= 3 )); then
+    VERSION="$(resolve_mirror_release "$2" "$3")"
+  else
+    VERSION="$(resolve_release_tag "${2:-}")"
+  fi
 else
   VERSION="${2:-sha-$(git rev-parse HEAD)}"
   require_version "$VERSION"

@@ -109,7 +109,7 @@ RSpec.describe 'bin/main-guard' do
 
     it 'alerts PILOT_DEV_ALERTS through the shared action only when the check failed' do
       expect(job.fetch('environment')).to eq('dev')
-      expect(alert.fetch('uses')).to eq('OlegShevtsov1/1_mvp_infra/.github/actions/notify-telegram@env/dev')
+      expect(alert.fetch('uses')).to eq('./infra-helpers/.github/actions/notify-telegram')
       expect(alert.fetch('if')).to eq("failure() && steps.check.outcome == 'failure'")
       expect(alert.fetch('with').fetch('topic')).to eq('PILOT_DEV_ALERTS')
       expect(alert.fetch('with').fetch('message')).to include('steps.check.outputs.message')
@@ -117,6 +117,10 @@ RSpec.describe 'bin/main-guard' do
         name = "TELEGRAM_PILOT_DEV_ALERTS_#{part}"
         expect(alert.fetch('env')[name]).to eq("${{ secrets.#{name} }}")
       end
+    end
+
+    it 'keeps running on the mirror: the job has no if' do
+      expect(job).not_to have_key('if')
     end
   end
 
@@ -147,6 +151,24 @@ RSpec.describe 'bin/main-guard' do
       expect(check.fetch('run')).to eq('bin/main-guard')
       expect(check.fetch('env')).to include('BRANCH' => 'develop')
       expect(check.fetch('env').slice('REPO', 'SHA')).to eq(check_step(main_guard).fetch('env').slice('REPO', 'SHA'))
+    end
+
+    it 'is skipped on the mirror (vars.MIRROR == true) and runs on the primary (decision 51)' do
+      condition = workflow.fetch('jobs').values.sole.fetch('if')
+
+      expect(GithubExpression.evaluate(condition, 'vars' => { 'MIRROR' => 'true' })).to be(false)
+      [ {}, { 'MIRROR' => 'false' } ].each do |vars|
+        expect(GithubExpression.evaluate(condition, 'vars' => vars)).to be(true), vars.inspect
+      end
+    end
+
+    it 'names the mirror skip in the job name and keeps the primary name' do
+      name = workflow.fetch('jobs').values.sole.fetch('name')
+
+      expect(GithubExpression.interpolate(name, 'vars' => { 'MIRROR' => 'true' })).to start_with('Skipped on the mirror')
+      [ {}, { 'MIRROR' => 'false' } ].each do |vars|
+        expect(GithubExpression.interpolate(name, 'vars' => vars)).to eq('Commit on develop came from a merged PR'), vars.inspect
+      end
     end
 
     it 'alerts exactly like main-guard' do

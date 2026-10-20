@@ -4,7 +4,8 @@ RSpec.describe 'deploy/prod_guard.sh' do
   let(:sha) { 'f' * 40 }
 
   def guard(mode, env)
-    full_env = { 'REF' => 'refs/heads/main', 'ENVIRONMENT' => nil, 'CONFIRM' => nil, 'VERSION' => nil, 'ACTION' => nil }
+    full_env = { 'REF' => 'refs/heads/main', 'ENVIRONMENT' => nil, 'CONFIRM' => nil, 'VERSION' => nil, 'ACTION' => nil,
+                 'MIRROR' => nil, 'SOURCE_SHA' => nil }
     Open3.capture2e(full_env.merge(env), Rails.root.join('deploy/prod_guard.sh').to_s, mode)
   end
 
@@ -49,6 +50,36 @@ RSpec.describe 'deploy/prod_guard.sh' do
       output, status = guard('deploy', valid)
       expect(status).to be_success, output
       expect(output).to eq("tag=v0.1.0\n")
+    end
+
+    it 'on the mirror (MIRROR=true) prints the tag and the source_sha' do
+      output, status = guard('deploy', valid.merge('VERSION' => 'v0.2.0', 'MIRROR' => 'true', 'SOURCE_SHA' => sha))
+      expect(status).to be_success, output
+      expect(output).to eq("tag=v0.2.0\nsource_sha=#{sha}\n")
+    end
+
+    it 'on the mirror refuses a missing or malformed source_sha, naming mirror mode' do
+      [ nil, 'f' * 39, 'F' * 40, "sha-#{sha}" ].each do |source_sha|
+        output, status = guard('deploy', valid.merge('MIRROR' => 'true', 'SOURCE_SHA' => source_sha))
+        expect(status.exitstatus).to eq(1), source_sha.inspect
+        expect(output).to include('::error::', 'mirror mode')
+        expect(output).not_to include('tag=')
+      end
+    end
+
+    it 'on the mirror still refuses a bare sha as the version' do
+      output, status = guard('deploy', valid.merge('VERSION' => sha, 'MIRROR' => 'true', 'SOURCE_SHA' => sha))
+      expect(status.exitstatus).to eq(1)
+      expect(output).not_to include('tag=')
+    end
+
+    it 'on the primary refuses a source_sha, naming primary mode' do
+      [ nil, 'false' ].each do |mirror|
+        output, status = guard('deploy', valid.merge('MIRROR' => mirror, 'SOURCE_SHA' => sha))
+        expect(status.exitstatus).to eq(1), mirror.inspect
+        expect(output).to include('::error::', 'primary mode')
+        expect(output).not_to include('tag=')
+      end
     end
   end
 

@@ -20,11 +20,21 @@ its entry under `[Unreleased]` (checked by `changelog-check`); a release moves t
 
 ### Fixed
 
+### Security
+
+## [0.2.0] - 2026-10-20
+
+### Added
+
+- Prod deploy from the public mirror (decision 43): `Kamal Deploy` takes `source_sha` when `MIRROR=true`, checks
+  the pair against `MIRROR_SOURCE.json` and the mirror tag (fail closed) and promotes the primary's image
+  `sha-<source_sha>` without building; `develop-guard` is skipped on the mirror (PILOT-154).
+
+### Fixed
+
 - `bin/wait-dev-deploy` finds the Dev Deploy run by the sha it deploys (run title or Gate log) instead of the
   `main` branch GitHub reports for `workflow_run` runs, so a deployed `develop` merge no longer fails as
   "superseded by a newer main commit" (PILOT-116).
-
-### Security
 
 ## [0.1.1] - 2026-10-20
 

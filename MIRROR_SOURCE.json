@@ -1,8 +1,15 @@
 {
   "repo": "1_mvp_pilot_be",
-  "source_ref": "origin/develop",
-  "source_sha": "fc958535ff6cf71f723aea5085fba57d5a571299",
-  "mirror_sha": "7e60a4404d339b1ef3ddc5c19adc3373605b5da7",
-  "synced_at": "2026-10-20T13:58:51Z",
-  "tags": []
+  "source_ref": "origin/main",
+  "source_sha": "7788d11857295e87c4121d3214b4a4783518d86a",
+  "mirror_sha": "bb8afb757898911016086d8fbf8545897c244d3e",
+  "synced_at": "2026-10-20T21:05:10Z",
+  "tags": [
+    {
+      "tag": "v0.2.0",
+      "primary_sha": "efa8c8b04b454ebade76716d64cfcf4e417495b6",
+      "mirror_sha": "bb8afb757898911016086d8fbf8545897c244d3e",
+      "synced_at": "2026-10-20T21:05:10Z"
+    }
+  ]
 }
