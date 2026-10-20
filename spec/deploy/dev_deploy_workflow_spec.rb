@@ -9,6 +9,17 @@ RSpec.describe '.github/workflows/dev-deploy.yml' do
     output.split - %w[PROJECT_NAME KAMAL_REGISTRY_PASSWORD]
   end
 
+  # The public mirror runs these workflows unchanged with its own VPN client; on the primary the values are
+  # empty and vpn-up keeps its default profile. Addresses stay in secrets and variables, never in the file.
+  let(:vpn_up_inputs) do
+    [
+      [ 'ovpn', '${{ secrets.VPN_CI_OVPN }}' ],
+      [ 'ci-vpn-ip', '${{ secrets.CI_VPN_IP }}' ],
+      [ 'dev-host', '${{ secrets.DEV_HOST }}' ],
+      [ 'dns-zones', '${{ vars.DNS_ZONES }}' ]
+    ]
+  end
+
   def step_env(job, step_name)
     jobs.fetch(job).fetch('steps').find { |step| step['name'] == step_name }.fetch('env')
   end
@@ -41,6 +52,13 @@ RSpec.describe '.github/workflows/dev-deploy.yml' do
       expect(triggers(file).fetch('push').fetch('branches')).to include('main', 'develop', 'hotfix/*'), file
     end
     expect(triggers('rails-test.yml').fetch('pull_request').fetch('branches')).to include('main', 'develop')
+  end
+
+  it 'passes the mirror VPN client inputs to every vpn-up step' do
+    vpn_ups = jobs.values.flat_map { |job| job.fetch('steps') { [] } }.select { |s| s['uses'].to_s.end_with?('/vpn-up@env/dev') }
+
+    expect(vpn_ups.size).to eq(1)
+    vpn_ups.each { |s| expect(s.fetch('with').to_a).to eq(vpn_up_inputs) }
   end
 
   describe 'the superseded check' do

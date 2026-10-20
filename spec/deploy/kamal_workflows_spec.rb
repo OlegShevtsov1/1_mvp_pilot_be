@@ -24,6 +24,17 @@ RSpec.describe 'prod workflows' do
     output.split - %w[PROJECT_NAME KAMAL_REGISTRY_PASSWORD]
   end
 
+  # The public mirror runs these workflows unchanged with its own VPN client; on the primary the values are
+  # empty and vpn-up keeps its default profile. Addresses stay in secrets and variables, never in the file.
+  let(:vpn_up_inputs) do
+    [
+      [ 'ovpn', '${{ secrets.VPN_CI_OVPN }}' ],
+      [ 'ci-vpn-ip', '${{ secrets.CI_VPN_IP }}' ],
+      [ 'dev-host', '${{ secrets.DEV_HOST }}' ],
+      [ 'dns-zones', '${{ vars.DNS_ZONES }}' ]
+    ]
+  end
+
   # Concurrency groups are shared across workflow and job level: Kamal Manage holds kamal-prod for
   # the whole run, Kamal Deploy only for its deploy job, so a rollback never waits for release-watch.
   shared_examples 'a guarded prod workflow' do |file, job_name, run_step, concurrency_job, extra_prod_jobs = []|
@@ -71,6 +82,13 @@ RSpec.describe 'prod workflows' do
       expect(jobs.fetch(job_name).fetch('steps')[down]['if']).to eq('always()')
     end
 
+    it 'passes the mirror VPN client inputs to every vpn-up step' do
+      vpn_ups = jobs.values.flat_map { |job| job.fetch('steps') { [] } }.select { |s| s['uses'].to_s.end_with?('/vpn-up@env/dev') }
+
+      expect(vpn_ups).not_to be_empty
+      vpn_ups.each { |s| expect(s.fetch('with').to_a).to eq(vpn_up_inputs), s['name'] }
+    end
+
     it 'only runs Kamal through the deploy scripts and has no Kamal 1 leftovers' do
       text = Rails.root.join('.github/workflows', file).read
       expect(text).not_to match(/traefik/i)
@@ -83,6 +101,11 @@ RSpec.describe 'prod workflows' do
 
     let(:workflow) { load_workflow('kamal-deploy.yml') }
     let(:jobs) { workflow.fetch('jobs') }
+
+    it 'connects the VPN in deploy and release-watch only' do
+      with_vpn = jobs.select { |_, job| job.fetch('steps') { [] }.any? { |s| s['uses'].to_s.end_with?('/vpn-up@env/dev') } }
+      expect(with_vpn.keys).to contain_exactly('deploy', 'release-watch')
+    end
 
     it 'takes exactly environment (prod only), version and confirm' do
       inputs = workflow.dig('on', 'workflow_dispatch', 'inputs')

@@ -189,6 +189,9 @@ jobs:
         uses: OlegShevtsov1/1_mvp_infra/.github/actions/vpn-up@env/dev
         with:
           ovpn: ${{ secrets.VPN_CI_OVPN }}
+          ci-vpn-ip: ${{ secrets.CI_VPN_IP }}
+          dev-host: ${{ secrets.DEV_HOST }}
+          dns-zones: ${{ vars.DNS_ZONES }}
 
       - name: Check that prod is reachable over the VPN
         env:
@@ -249,6 +252,9 @@ jobs:
         uses: OlegShevtsov1/1_mvp_infra/.github/actions/vpn-up@env/dev
         with:
           ovpn: ${{ secrets.VPN_CI_OVPN }}
+          ci-vpn-ip: ${{ secrets.CI_VPN_IP }}
+          dev-host: ${{ secrets.DEV_HOST }}
+          dns-zones: ${{ vars.DNS_ZONES }}
 
       - name: Count new GlitchTip issues
         id: glitchtip

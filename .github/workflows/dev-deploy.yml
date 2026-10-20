@@ -271,6 +271,9 @@ jobs:
         uses: OlegShevtsov1/1_mvp_infra/.github/actions/vpn-up@env/dev
         with:
           ovpn: ${{ secrets.VPN_CI_OVPN }}
+          ci-vpn-ip: ${{ secrets.CI_VPN_IP }}
+          dev-host: ${{ secrets.DEV_HOST }}
+          dns-zones: ${{ vars.DNS_ZONES }}
 
       # The lock wait can be long; a newer commit on the branch has its own run by then, and a
       # deleted branch (a merged hotfix) has nothing left to deploy.
