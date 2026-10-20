@@ -1,31 +1,36 @@
 # Project Management System
 
+A RESTful API backend for managing projects and tasks: users sign in with a token, create projects and track
+their tasks through a documented JSON API. The specification is [TASK_DEFINITION.md](TASK_DEFINITION.md), the
+domain glossary and invariants are in [CONTEXT.md](CONTEXT.md), and the architecture as built is in
+[docs/architecture-map.md](docs/architecture-map.md). The frontend lives in
+[1_mvp_pilot_fe](https://github.com/OlegShevtsov1/1_mvp_pilot_fe); the delivery process (Claude Code plugins and the
+Archon factory) in [1_mvp_sdlc](https://github.com/OlegShevtsov1/1_mvp_sdlc).
+
 ## Live
 
 - **Production API:** <https://pilot.up.km.ua/health> · **Swagger UI:** <https://pilot.up.km.ua/api-docs/index.html>
 - **Dev API:** <https://dev.pilot.up.km.ua/health> · **Swagger UI:** <https://dev.pilot.up.km.ua/api-docs/index.html>
-- **Frontend (prod):** <https://app.pilot.up.km.ua> · repo [1_mvp_pilot_fe](https://github.com/OlegShevtsov1/1_mvp_pilot_fe)
-- **SDLC tooling:** [1_mvp_sdlc](https://github.com/OlegShevtsov1/1_mvp_sdlc)
+- **Frontend (prod):** <https://app.pilot.up.km.ua>
 
-A robust RESTful API backend for managing projects and tasks. This application allows users to create, update, and track projects and their associated tasks through a secure API.
+## Architecture
 
-# Detailed task description
+Rails 7.2 API-only on Puma, PostgreSQL 16 for users, projects and tasks, Redis 7 as the Rails cache for list
+endpoints, and GlitchTip (Sentry protocol) for error tracking; the frontend is a separate SPA that calls the API
+over HTTPS with `X-User-Email`/`X-User-Token` headers and relays its own browser errors through the API's
+`/api/errors` tunnel. The C4 container diagram, the module inventory, the conventions a new feature must follow,
+the datastores and the known technical debt are in [docs/architecture-map.md](docs/architecture-map.md); the
+schema is [db/schema.rb](db/schema.rb) and the OpenAPI document [swagger/v1/swagger.json](swagger/v1/swagger.json).
 
-**GitHub:** [pilot/blob/develop/TASK_DEFINITION.md](pilot/blob/develop/TASK_DEFINITION.md)
+## Deployment
 
-A robust RESTful API backend for managing projects and tasks. This application allows users to create, update, and track projects and their associated tasks through a secure API.
-
-# Detailed task description
-
-**GitHub:** [pilot/blob/develop/TASK_DEFINITION.md](pilot/blob/develop/TASK_DEFINITION.md)
-
-## Repository
-
-**GitHub:** [pilot](pilot)
-
-## Project
-
-**GitHub:** [projects/11](projects/5)
+One Docker image per commit, built once by CI and promoted, never rebuilt, to production. Kamal 2 runs it on two
+environments: **dev** (every merge into `develop` is deployed automatically after CI, see [Dev deploy](#dev-deploy))
+and **prod** (deployed only from an annotated release tag `vX.Y.Z` on `main`, with a typed confirmation, see
+[Prod deploy](#prod-deploy) and [Releases and hotfixes](#releases-and-hotfixes)). Each deploy waits for `/health`
+to report the new release and runs a smoke test against the Swagger document; production is then watched for ten
+minutes (`release-watch`) and can be rolled back from the console or from GitHub Actions. Errors from both
+environments go to GlitchTip through the Sentry SDK ([Error tracking](#error-tracking)).
 
 ## Features
 
@@ -40,7 +45,7 @@ A robust RESTful API backend for managing projects and tasks. This application a
 ## Requirements
 
 - Ruby 3.3.6
-- Rails 7.2.2+
+- Rails 7.2.3 (see `Gemfile`)
 - PostgreSQL
 - Docker (optional)
 
@@ -184,9 +189,8 @@ Secrets (names only):
   `TELEGRAM_PILOT_DEV_ALERTS_BOT_TOKEN`, `TELEGRAM_PILOT_DEV_ALERTS_CHAT_ID`,
   `TELEGRAM_PILOT_DEV_ALERTS_THREAD_ID`
 
-Shared mechanism (kamal-proxy, vpn-up/vpn-down, CI SSH key):
-[docs/uk/16-dev-kamal.md](https://github.com/OlegShevtsov1/1_mvp_infra/blob/env/dev/docs/uk/16-dev-kamal.md)
-(private infra repo).
+The shared mechanism (kamal-proxy, the `vpn-up`/`vpn-down` actions, the CI SSH key) is documented in the
+private infrastructure repository.
 
 ### Error tracking
 
@@ -231,7 +235,7 @@ the one it replaced becomes `prod-previous`. A rollback moves the tags the same 
 `prod-current` is always what is running.
 
 Deploy a release: an annotated tag `vX.Y.Z` on `main` whose commit Dev Deploy has already
-deployed and smoke-tested (see "Релізи й hotfix"); a bare sha is refused:
+deployed and smoke-tested (see "Releases and hotfixes"); a bare sha is refused:
 
 ```
 gh workflow run "Kamal Deploy" --ref main -f environment=prod -f version=vX.Y.Z -f confirm=prod
@@ -292,11 +296,9 @@ Pending:
 - `Kamal Manage` `logs` prints prod app logs into the Actions log; restrict it before the
   repository goes public.
 
-Prod project infrastructure:
-[docs/uk/14-prod-proektu.md](https://github.com/OlegShevtsov1/1_mvp_infra/blob/env/dev/docs/uk/14-prod-proektu.md)
-(private infra repo).
+The prod host, VPN and DNS are managed in the private infrastructure repository.
 
-## Релізи й hotfix
+## Releases and hotfixes
 
 **Versions.** Releases are annotated git tags `vX.Y.Z` ([Semantic Versioning](https://semver.org)).
 The number is not chosen by hand: `scripts/next-version.sh [<ref>]` reads the single `Type:` line of
@@ -422,7 +424,7 @@ starting with `Type:`, with one of `feat`, `fix`, `chore`, `docs`, `refactor`, `
 
 `changelog-check` runs on every pull request into `main` or `develop` (`bin/changelog-check`): a
 `Type: feat` or `Type: fix` PR must change `[Unreleased]` in `CHANGELOG.md` or add a version section;
-the label `skip-changelog` passes it. `Release` runs on every pushed `v*` tag (see "Релізи й hotfix").
+the label `skip-changelog` passes it. `Release` runs on every pushed `v*` tag (see "Releases and hotfixes").
 
 ## AI PR review
 
@@ -442,7 +444,7 @@ alternative is a Claude subscription token `CLAUDE_CODE_OAUTH_TOKEN`: change the
 "changes requested") and `review_requested`. To ask for a re-review without a push, comment
 `@claude review` on the PR (only users with write access; the action refuses others).
 
-**Skips.** The factory's `archon/task-factory-*` PRs (the factory reviews its own PRs, Р-C5),
+**Skips.** The factory's `archon/task-factory-*` PRs (the factory reviews its own PRs, decision R-C5),
 dependabot, draft PRs and the release PR `develop` → `main`: the job is skipped, or green with
 `AI review skipped: <reason>` when triggered by a comment.
 
@@ -545,6 +547,3 @@ rm tmp/pids/server.pid
 
 Then start the server again.
 
-```
-
-```
