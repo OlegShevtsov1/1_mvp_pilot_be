@@ -11,7 +11,10 @@ RSpec.describe Api::V1::UsersController, type: :controller do
 
   describe '#create' do
     context 'with valid parameters' do
-      let(:service) { instance_double(Users::Create, success?: true, user: user, errors: []) }
+      let(:service) do
+        instance_double(Users::Create, success?: true, user: user, errors: [],
+                                       token_fields: { access_token: 'a', refresh_token: 'r', expires_in: 3600 })
+      end
 
       before do
         allow(Users::Create).to receive(:call).and_return(service)
@@ -26,6 +29,7 @@ RSpec.describe Api::V1::UsersController, type: :controller do
         expect(json_response['data']).to have_key('user_id')
         expect(json_response['data']).to have_key('email')
         expect(json_response['data']).to have_key('authentication_token')
+        expect(json_response['data']).to include('access_token' => 'a', 'refresh_token' => 'r', 'expires_in' => 3600)
       end
     end
 

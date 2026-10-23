@@ -121,6 +121,8 @@ GEM
       warden (~> 1.2.3)
     diff-lcs (1.6.0)
     docile (1.4.1)
+    doorkeeper (5.9.9)
+      railties (>= 5)
     dotenv (3.1.8)
     dotenv-rails (3.1.8)
       dotenv (= 3.1.8)
@@ -156,6 +158,8 @@ GEM
       addressable (~> 2.8)
       bigdecimal (~> 3.1)
     jsonapi-renderer (0.2.2)
+    jwt (3.3.0)
+      base64
     kamal (2.12.0)
       activesupport (>= 7.0)
       base64 (~> 0.2)
@@ -449,9 +453,11 @@ DEPENDENCIES
   byebug
   cancancan (~> 3.5)
   devise (~> 5.0, >= 5.0.4)
+  doorkeeper (~> 5.9)
   dotenv-rails (>= 3.1.1)
   factory_bot_rails
   fasterer (= 0.11.0)
+  jwt (~> 3.3)
   kamal (~> 2.12)
   listen
   overcommit (= 0.67.1)

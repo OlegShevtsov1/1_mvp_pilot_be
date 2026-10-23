@@ -12,6 +12,8 @@ gem 'puma', '~> 7.2.1'
 gem 'bootsnap', require: false
 gem 'devise', '~> 5.0', '>= 5.0.4'
 gem 'simple_token_authentication', '~> 1.18'
+gem 'doorkeeper', '~> 5.9'
+gem 'jwt', '~> 3.3'
 gem 'rswag-api'
 gem 'rswag-ui'
 gem 'cancancan', '~> 3.5'

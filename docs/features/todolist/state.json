@@ -1,0 +1,35 @@
+{
+  "history": [
+    {
+      "at": "2026-10-22T10:40:00Z",
+      "evidence": "feature-start:6ad9e7a3497aff024e1928c0",
+      "stage": "idea"
+    },
+    {
+      "at": "2026-10-22T11:43:40Z",
+      "evidence": "sdlc-gate:prd:660a0ab",
+      "stage": "prd"
+    },
+    {
+      "at": "2026-10-22T12:45:56Z",
+      "evidence": "sdlc-gate:architecture:eb274c8",
+      "stage": "architecture"
+    },
+    {
+      "at": "2026-10-22T13:35:19Z",
+      "evidence": "sdlc-gate:contracts:c94b88a",
+      "stage": "contracts"
+    },
+    {
+      "at": "2026-10-22T13:52:45Z",
+      "evidence": "sdlc-gate:tasks:c94b88a",
+      "stage": "tasks"
+    }
+  ],
+  "schema_version": 1,
+  "slug": "todolist",
+  "stage": "tasks",
+  "trello_card_id": "6ad9e7a3497aff024e1928c0",
+  "trello_card_id_short": 222,
+  "trello_card_title": "todolist: TODO List \u2014 landing, Google/login auth, dashboard (devise + doorkeeper)"
+}

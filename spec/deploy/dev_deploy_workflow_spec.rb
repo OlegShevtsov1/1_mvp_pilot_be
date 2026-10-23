@@ -37,6 +37,14 @@ RSpec.describe '.github/workflows/dev-deploy.yml' do
     end
   end
 
+  it 'passes the GOOGLE_CLIENT_ID environment variable to Kamal in the deploy job' do
+    expect(step_env('deploy', 'Deploy or roll back')['GOOGLE_CLIENT_ID']).to eq('${{ vars.GOOGLE_CLIENT_ID }}')
+  end
+
+  it 'passes the OAUTH_CLIENT_ID environment variable to Kamal in the deploy job' do
+    expect(step_env('deploy', 'Deploy or roll back')['OAUTH_CLIENT_ID']).to eq('${{ vars.OAUTH_CLIENT_ID }}')
+  end
+
   def triggers(file)
     YAML.load_file(Rails.root.join('.github/workflows', file)).transform_keys { |key| key == true ? 'on' : key }.fetch('on')
   end

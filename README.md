@@ -17,7 +17,8 @@ Archon factory) in [1_mvp_sdlc](https://github.com/OlegShevtsov1/1_mvp_sdlc).
 
 Rails 7.2 API-only on Puma, PostgreSQL 16 for users, projects and tasks, Redis 7 as the Rails cache for list
 endpoints, and GlitchTip (Sentry protocol) for error tracking; the frontend is a separate SPA that calls the API
-over HTTPS with `X-User-Email`/`X-User-Token` headers and relays its own browser errors through the API's
+over HTTPS with a bearer access token, falling back until the cutoff to the legacy `X-User-Email`/`X-User-Token`
+headers (ADR-0005), and relays its own browser errors through the API's
 `/api/errors` tunnel. The C4 container diagram, the module inventory, the conventions a new feature must follow,
 the datastores and the known technical debt are in [docs/architecture-map.md](docs/architecture-map.md); the
 schema is [db/schema.rb](db/schema.rb) and the OpenAPI document [swagger/v1/swagger.json](swagger/v1/swagger.json).
@@ -167,9 +168,9 @@ step succeeded, 1 when that run failed, a later Dev Deploy run deployed a commit
 (superseded), Rails Tests or Rails CI failed, or it timed out, and 2 on a malformed sha. GitHub
 reports every `workflow_run` run on `main`, so the script finds the run by its title
 `Dev Deploy sha-<sha>` (or, for older runs titled just `Dev Deploy`, by the `HEAD_SHA` in their Gate
-log); a run of the commit that did not deploy it is not the one it waits for. GitHub does not always
-create the second `workflow_run` run, so when both CI runs are green and no run for the commit is
-deploying, it dispatches Dev Deploy once on the commit's own branch (`develop`, `hotfix/*` or
+log once the run completed); a run of the commit that did not deploy it is not the one it waits for.
+GitHub does not always create the second `workflow_run` run, so when both CI runs are green and no
+run for the commit is deploying, it dispatches Dev Deploy once on the commit's own branch (`develop`, `hotfix/*` or
 `main`, only while that branch is still the commit), prints a `warning:` line and waits for that
 run instead. `WAIT_DEV_DEPLOY_TIMEOUT` (seconds, default 1200),
 `WAIT_DEV_DEPLOY_INTERVAL` (15) and `WAIT_DEV_DEPLOY_GRACE` (120, how long to wait for the automatic
@@ -194,6 +195,11 @@ Secrets (names only):
   `TELEGRAM_PILOT_DEV_ALERTS_BOT_TOKEN`, `TELEGRAM_PILOT_DEV_ALERTS_CHAT_ID`,
   `TELEGRAM_PILOT_DEV_ALERTS_THREAD_ID`
 
+Variables (names only): environment `dev`: `GOOGLE_CLIENT_ID` (public Google OAuth client id, passed to the
+container as plain env; never committed; empty when unset), `OAUTH_CLIENT_ID` (public client id of the web app's
+Doorkeeper application, passed as plain env; the container creates the application on start, a changed value adds a
+second one; never committed; empty when unset).
+
 `INFRA_READ_TOKEN` (repository secret) is a token that can only read the owner's `1_mvp_infra`. Every job
 that needs `vpn-up`, `vpn-down` or `notify-telegram` first checks out `1_mvp_infra` at `env/dev` (only
 `.github/actions`, `scripts`, `host`, `projects` and the top-level files) into `infra-helpers/` and runs the
@@ -215,7 +221,8 @@ with `SENTRY_ENVIRONMENT` and the release; request data is scrubbed with `filter
   up to 256 KiB; 404 while `SENTRY_ALLOWED_FE_DSN` is unset. Each client IP gets 30 requests a
   minute, counting every request including refused ones, then 429; the count is also kept in process
   memory, so it holds while Redis is unavailable or comes back mid-minute.
-- CORS: browsers may call the API from the origins in `CORS_ALLOWED_ORIGINS` (comma-separated).
+- CORS: browsers may call the API from the origins in `CORS_ALLOWED_ORIGINS` (comma-separated),
+  with any request header (including `Authorization`); answers expose `Retry-After`.
 - `POST /admin/glitchtip_smoke/<unhandled|manual|db>` with header `X-Smoke-Token: <SMOKE_TOKEN>`
   (and optionally `X-Smoke-Marker: <word>`) raises that kind of error; 404 without the token.
 - `bin/rails 'glitchtip:smoke[rake]'` (marker from `GLITCHTIP_SMOKE_MARKER`) reports one from
@@ -298,6 +305,11 @@ Secrets (names only):
   `release-watch`; without it every watch ends ❌ "GlitchTip check failed", the deploy itself is not
   affected)
 
+Variables (names only): environment `prod` (here and on the public mirror): `GOOGLE_CLIENT_ID` (public Google
+OAuth client id, passed to the container as plain env; never committed; empty when unset), `OAUTH_CLIENT_ID` (public
+client id of the web app's Doorkeeper application, passed as plain env; the container creates the application on
+start, a changed value adds a second one; never committed; empty when unset).
+
 Pending:
 
 - `remove` is disabled: its backup gate always fails until the prod DB backup (I5) exists.
@@ -339,8 +351,19 @@ refactor and test need no entry. `scripts/release-notes.sh vX.Y.Z` prints a vers
    `## [X.Y.Z] - YYYY-MM-DD` (X.Y.Z from `scripts/next-version.sh origin/develop`) and keep
    `[Unreleased]` with its six empty categories. Its squash commit `<D>` is deployed to dev by Dev
    Deploy.
-2. Release PR `develop` → `main` (`Type: chore`), merged by the operator by hand with a merge commit
-   (decision 27); `TDD check` skips it, `changelog-check` passes it.
+2. Release PR `develop` → `main`, titled `PILOT-<n>: Release vX.Y.Z` (`Type: chore`), merged by the
+   operator by hand with a merge commit (decision 27); `TDD check` skips it, `changelog-check` passes
+   it. Its body carries the version's changelog (decision 64): a `## Changelog` heading followed by
+   exactly the output of `scripts/release-notes.sh vX.Y.Z`, which is also the text of the GitHub
+   Release. `pr-conventions-check` (condition 4) fails it otherwise and runs again when the body is
+   edited. Build the body from the changelog instead of typing it:
+   ```
+   { printf 'Release vX.Y.Z: develop into main.\n\n## Changelog\n\n'
+     scripts/release-notes.sh vX.Y.Z
+     printf '\nType: chore\n'; } > "${TMPDIR:-/tmp}/release-pr.md"
+   gh pr create --base main --head develop --title "PILOT-<n>: Release vX.Y.Z" --body-file "${TMPDIR:-/tmp}/release-pr.md"
+   ```
+   More `## ` sections may follow the changelog; it ends at the next `## ` heading or the `Type:` line.
 3. The operator tags `<D>`, the commit dev tested, not the merge commit (which Dev Deploy never
    built):
    ```
@@ -451,7 +474,9 @@ on every push to `main` that the commit came from a merged pull request and aler
 `hotfix/PILOT-<n>-<slug>`, the factory's `archon/task-factory-*`, or `develop` into `main`
 (condition 1); the title is `PILOT-<n>: <card title>` (condition 2); the body has exactly one line
 starting with `Type:`, with one of `feat`, `fix`, `chore`, `docs`, `refactor`, `test`, `ci`
-(condition 3). The title and body become the squash commit.
+(condition 3); a release PR titled `PILOT-<n>: Release vX.Y.Z` has a `## Changelog` section that is
+the CHANGELOG.md section `[X.Y.Z]` verbatim (condition 4, decision 64). The title and body become the
+squash commit.
 
 `TDD check` does not check commits that are already on `main` (so a back-merge of `main` into
 `develop` passes), and skips the release PR `develop` → `main`.
@@ -463,16 +488,17 @@ the label `skip-changelog` passes it. `Release` runs on every pushed `v*` tag (s
 ## AI PR review
 
 `.github/workflows/ai-review.yml` (check `AI review`, decision 32) reviews human pull requests with
-`anthropics/claude-code-action` (Sonnet, read-only tools).
+`anthropics/claude-code-action` (Sonnet 5.5, `claude-sonnet-5-5`, read-only tools).
 
 **Switch.** The repository variable `AI_REVIEW`: only the exact value `on` runs a review. Anything
 else, including unset, ends the check green in seconds with `AI review disabled (AI_REVIEW=off)` and
 no model call. Set it with `gh variable set AI_REVIEW -b on` or `gh variable set AI_REVIEW -b off`;
 the default and resting state is `off`.
 
-**Secret.** `ANTHROPIC_API_KEY` (`gh secret set ANTHROPIC_API_KEY`, value pasted at the prompt). The
-alternative is a Claude subscription token `CLAUDE_CODE_OAUTH_TOKEN`: change the action input
-`anthropic_api_key` to `claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}` by PR.
+**Secret.** `CLAUDE_CODE_OAUTH_TOKEN`, a Claude subscription token (decision 33 a; create it with
+`claude setup-token`, then `gh secret set CLAUDE_CODE_OAUTH_TOKEN`, value pasted at the prompt),
+passed as the action input `claude_code_oauth_token`. The alternative is an Anthropic API key
+`ANTHROPIC_API_KEY`: change the input to `anthropic_api_key` with that secret by PR.
 
 **Triggers.** Pull request `opened`, `reopened`, `ready_for_review`, `synchronize` (a push, also after
 "changes requested") and `review_requested`. To ask for a re-review without a push, comment
@@ -490,8 +516,8 @@ factory merge-gate refuses non-green checks; making `AI review` a required check
 follows with PUB.
 
 **Cost.** One review per triggering event, at most 25 turns and a 15-minute job timeout; a push
-cancels a running review. Usage shows in the Anthropic console for the key. Keep it `off` unless a
-review is wanted.
+cancels a running review. Reviews count against the Claude subscription's usage limits of the
+token's account. Keep it `off` unless a review is wanted.
 
 ## API Documentation
 

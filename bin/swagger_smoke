@@ -81,16 +81,20 @@ if [[ "${SMOKE_READ_ONLY:-}" == '1' ]]; then
 fi
 
 # --- sign up --------------------------------------------------------------
+# Presenting SMOKE_TOKEN exempts the smoke's sign-ups from the per-address sign-up limit.
+SIGN_UP_EXTRA=()
+[[ -n "${SMOKE_TOKEN:-}" ]] && SIGN_UP_EXTRA+=(-H "X-Smoke-Token: $SMOKE_TOKEN")
+
 check 'sign up user A' 201 POST /api/v1/users \
-  "{\"user\":{\"email\":\"$EMAIL_A\",\"password\":\"$PASSWORD\",\"password_confirmation\":\"$PASSWORD\"}}"
+  "{\"user\":{\"email\":\"$EMAIL_A\",\"password\":\"$PASSWORD\",\"password_confirmation\":\"$PASSWORD\"}}" "${SIGN_UP_EXTRA[@]}"
 TOKEN_A="$(json data authentication_token)"
 
 check 'sign up user B' 201 POST /api/v1/users \
-  "{\"user\":{\"email\":\"$EMAIL_B\",\"password\":\"$PASSWORD\",\"password_confirmation\":\"$PASSWORD\"}}"
+  "{\"user\":{\"email\":\"$EMAIL_B\",\"password\":\"$PASSWORD\",\"password_confirmation\":\"$PASSWORD\"}}" "${SIGN_UP_EXTRA[@]}"
 TOKEN_B="$(json data authentication_token)"
 
 check 'sign up rejects mismatched confirmation' 422 POST /api/v1/users \
-  "{\"user\":{\"email\":\"dup-$STAMP@example.com\",\"password\":\"$PASSWORD\",\"password_confirmation\":\"nope\"}}"
+  "{\"user\":{\"email\":\"dup-$STAMP@example.com\",\"password\":\"$PASSWORD\",\"password_confirmation\":\"nope\"}}" "${SIGN_UP_EXTRA[@]}"
 
 AUTH_A=(-H "X-User-Token: $TOKEN_A" -H "X-User-Email: $EMAIL_A")
 AUTH_B=(-H "X-User-Token: $TOKEN_B" -H "X-User-Email: $EMAIL_B")
@@ -116,7 +120,7 @@ check 'create project rejects short description' 422 POST /api/v1/projects \
 
 check 'show project' 200 GET "/api/v1/projects/$PROJECT_ID" '' "${AUTH_A[@]}"
 check 'show missing project' 404 GET /api/v1/projects/999999 '' "${AUTH_A[@]}"
-check "show another user's project" 403 GET "/api/v1/projects/$PROJECT_ID" '' "${AUTH_B[@]}"
+check "show another user's project" 404 GET "/api/v1/projects/$PROJECT_ID" '' "${AUTH_B[@]}"
 
 check 'update project' 200 PUT "/api/v1/projects/$PROJECT_ID" \
   "{\"project\":{\"name\":\"Smoke Proj 2\",\"description\":\"$DESC\"}}" "${AUTH_A[@]}"

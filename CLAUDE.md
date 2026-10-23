@@ -94,7 +94,9 @@ exact `run:` lines of CI steps (`.github/workflows/rails-test.yml`, `rails-lint.
   Why: the frontend and `bin/swagger_smoke`, which runs on every dev and prod deploy, depend on it.
 - Authentication code changes only with an ADR and a regression test: token sign-in and checks
   (`Api::V1::BaseController#authenticate_user_from_token!`, `BaseApplication::Authenticate`, `Sessions::Create`,
-  `Api::V1::SessionsController`, the Devise and token lines of `User`, `config/initializers/devise.rb`).
+  `Api::V1::SessionsController`, the Devise and token lines of `User`, `config/initializers/devise.rb`,
+  `Auth::FailedSignInLimit`, `FailedSignInLimited`, `Oauth::TokensController`, the `resource_owner_from_credentials`
+  block of `config/initializers/doorkeeper.rb`).
   Why: a bug there locks out or exposes every account.
 - Never weaken the checks of `ErrorsController` (`/api/errors`: allowed DSN only, size limit, rate limit, through
   `SentryTunnel`) or `Admin::GlitchtipSmokeController` (`SMOKE_TOKEN` compared with `secure_compare`, every refusal

@@ -277,6 +277,8 @@ jobs:
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           SENTRY_ALLOWED_FE_DSN: ${{ secrets.SENTRY_ALLOWED_FE_DSN }}
           SMOKE_TOKEN: ${{ secrets.SMOKE_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+          OAUTH_CLIENT_ID: ${{ vars.OAUTH_CLIENT_ID }}
         run: deploy/deploy.sh prod "${TAG}" ${SOURCE_SHA:+"${SOURCE_SHA}"}
 
       - name: VPN down
