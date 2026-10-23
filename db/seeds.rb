@@ -26,3 +26,6 @@ if example_project
   }
   Task.create(example_task_params) until Task.find_by(name: Examples::TaskData.name, project_id: example_project.id)
 end
+
+# Public web client from OAUTH_CLIENT_ID; does nothing when it is unset.
+Rake::Task['oauth:web_application'].invoke

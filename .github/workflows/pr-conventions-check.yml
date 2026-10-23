@@ -1,7 +1,9 @@
 name: pr-conventions-check
 
-# The authoritative gate for the branching conventions (decision 29): branch name, PILOT-<n>: title
-# and exactly one Type: line in the body, see bin/pr-conventions-check. The check-branch-name.sh
+# The authoritative gate for the branching conventions (decision 29): branch name, PILOT-<n>: title,
+# exactly one Type: line in the body and, on a release PR (PILOT-<n>: Release vX.Y.Z), its CHANGELOG
+# section (decision 64), see bin/pr-conventions-check. The checkout is the merge ref, so CHANGELOG.md
+# already has the release's section. The check-branch-name.sh
 # session hook (S3b, 1_mvp_sdlc) only hints at the branch name before a push.
 # The title and body are untrusted input, so they reach the script only through env.
 
@@ -25,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check the branch, title and Type line
+      - name: Check the branch, title, Type line and release changelog
         env:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}

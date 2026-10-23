@@ -1,5 +1,8 @@
 class Api::V1::SessionsController < Api::V1::BaseController
+  include FailedSignInLimited
+
   skip_before_action :authenticate_user_from_token!, only: [ :create ]
+  around_action :limit_failed_sign_ins, only: :create
 
   def create
     service = Sessions::Create.call(params)
@@ -15,6 +18,7 @@ class Api::V1::SessionsController < Api::V1::BaseController
         }
       }
     else
+      failed_sign_in!
       render json: {
         status: 'error',
         message: service.errors.first

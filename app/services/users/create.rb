@@ -10,13 +10,23 @@ module Users
     def call
       @user = User.new(user_params)
 
-      if @user.save
-        @user = User.find(@user.id)
-      else
-        @errors = @user.errors.full_messages
+      ActiveRecord::Base.transaction do
+        if @user.save
+          @user = User.find(@user.id)
+          @token = Auth::IssueTokens.call(@user)
+        else
+          @errors = @user.errors.full_messages
+        end
       end
 
       self
+    end
+
+    def token_fields
+      return {} unless @token
+
+      { access_token: @token.plaintext_token, refresh_token: @token.plaintext_refresh_token,
+        expires_in: @token.expires_in }
     end
 
     def success?

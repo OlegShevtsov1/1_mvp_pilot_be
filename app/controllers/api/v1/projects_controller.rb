@@ -1,7 +1,7 @@
 class Api::V1::ProjectsController < Api::V1::BaseController
   include Authorization
 
-  load_and_authorize_resource
+  load_and_authorize_resource through: :current_user
 
   def index
     service = Projects::Index.call(current_user, params.permit(:task_status))

@@ -71,11 +71,13 @@ RSpec.describe 'AI PR review (decision 32)' do
       inputs = review.fetch('with')
 
       expect(inputs).to include(
-        'anthropic_api_key' => '${{ secrets.ANTHROPIC_API_KEY }}',
+        'claude_code_oauth_token' => '${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}',
         'github_token' => '${{ github.token }}'
       )
+      expect(inputs).not_to have_key('anthropic_api_key')
+      expect(inputs.fetch('claude_args')[/--model (\S+)/, 1]).to eq('claude-sonnet-5-5')
       expect(inputs.fetch('claude_args')).to include(
-        '--model claude-sonnet-5', '--max-turns 25', '--json-schema', '--allowedTools "Read,Glob,Grep"'
+        '--model claude-sonnet-5-5', '--max-turns 25', '--json-schema', '--allowedTools "Read,Glob,Grep"'
       )
       disallowed = inputs.fetch('claude_args')[/--disallowedTools "([^"]+)"/, 1].to_s.split(',')
       expect(disallowed).to include('Bash', 'Write', 'Edit')
@@ -116,7 +118,7 @@ RSpec.describe 'AI PR review (decision 32)' do
     end
 
     it 'hard-codes no secret, token or address' do
-      expect(text.scan(/secrets\.(\w+)/).flatten.uniq).to eq([ 'ANTHROPIC_API_KEY' ])
+      expect(text.scan(/secrets\.(\w+)/).flatten.uniq).to eq([ 'CLAUDE_CODE_OAUTH_TOKEN' ])
       expect(text).not_to match(/sk-ant-/)
       expect(text).not_to match(/gh[pousr]_[A-Za-z0-9]{20,}/)
       expect(text).not_to match(/github_pat_/)

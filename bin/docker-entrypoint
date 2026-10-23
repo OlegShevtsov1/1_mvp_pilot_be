@@ -16,7 +16,8 @@ if [ "${1}" == "./bin/rails" ] && [ "${2}" == "server" ]; then
     done
   fi
 
-  ./bin/rails db:prepare
+  # oauth:web_application creates the public web client from OAUTH_CLIENT_ID and does nothing when it is unset.
+  ./bin/rails db:prepare oauth:web_application
 fi
 
 exec "${@}"

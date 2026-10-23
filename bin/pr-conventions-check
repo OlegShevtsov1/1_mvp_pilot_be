@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
-# Checks a pull request against the branching conventions (decisions 24-26, 29); the
+# Checks a pull request against the branching conventions (decisions 24-26, 29, 64); the
 # pr-conventions-check workflow runs it on every pull request into main or develop.
 #   1. The head branch is feature/PILOT-<n>-<slug> or hotfix/PILOT-<n>-<slug>, the factory's
 #      archon/task-factory-*, or develop when the base is main (the release PR).
 #   2. The title, which becomes the squash subject, is PILOT-<n>: <card title>.
 #   3. The body, which becomes the squash body, has exactly one line starting with Type:, and its value
 #      is feat, fix, chore, docs, refactor, test or ci.
-# Env: HEAD_REF, BASE_REF, PR_TITLE, PR_BODY.
+#   4. A release PR, titled PILOT-<n>: Release vX.Y.Z, has a "## Changelog" heading in the body followed by
+#      the CHANGELOG.md section [X.Y.Z] verbatim, as scripts/release-notes.sh prints it; other titles skip it.
+#      The section ends at the next "## " heading or the Type: line.
+# Env: HEAD_REF, BASE_REF, PR_TITLE, PR_BODY, CHANGELOG_FILE (optional, default CHANGELOG.md of this repository).
 # Exit 0: every condition holds. Exit 1: at least one failed; each failure is printed. Exit 2: usage error.
 set -uo pipefail
 head_ref=${HEAD_REF:-}
 base_ref=${BASE_REF:-}
 title=${PR_TITLE:-}
 body=${PR_BODY:-}
+notes_script="$(dirname "${BASH_SOURCE[0]}")/../scripts/release-notes.sh"
+changelog=${CHANGELOG_FILE:-$(dirname "${BASH_SOURCE[0]}")/../CHANGELOG.md}
 
 if [[ -z "${head_ref}" || -z "${base_ref}" ]]; then
   echo "usage: HEAD_REF and BASE_REF must be set (PR_TITLE and PR_BODY may be empty)" >&2
@@ -48,5 +53,27 @@ else
     fail 3 "the Type: line '${type_line}' has an invalid value, expected one of feat, fix, chore, docs, refactor, test, ci"
 fi
 
+if [[ "${title}" =~ ^PILOT-[0-9]+:\ Release\ v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+  version=${BASH_REMATCH[1]}
+  if ! notes=$("${notes_script}" "${version}" "${changelog}" 2> /dev/null) || [[ -z "${notes}" ]]; then
+    fail 4 "CHANGELOG.md has no non-empty section [${version}] for the release PR '${title}'"
+  elif ! grep -q '^## Changelog[[:space:]]*$' <<< "${body}"; then
+    fail 4 "the release PR body has no '## Changelog' heading: put the output of scripts/release-notes.sh v${version} under it"
+  else
+    # The block goes back through release-notes.sh as a section [X.Y.Z] of its own, so both sides
+    # trim the blank lines around it by the same rule.
+    given=$("${notes_script}" "${version}" <(
+      echo "## [${version}]"
+      awk '
+        found && (index($0, "## ") == 1 || index($0, "Type:") == 1) { exit }
+        found { print }
+        !found && $0 ~ /^## Changelog[[:space:]]*$/ { found = 1 }
+      ' <<< "${body}"
+    ))
+    [[ "${given}" == "${notes}" ]] ||
+      fail 4 "the '## Changelog' section of the body is not the CHANGELOG.md section [${version}]: paste the output of scripts/release-notes.sh v${version}"
+  fi
+fi
+
 (( failed == 0 )) || exit 1
-echo "pr-conventions-check: '${head_ref}' into '${base_ref}', title and Type: line follow the conventions"
+echo "pr-conventions-check: '${head_ref}' into '${base_ref}', title, Type: line and release changelog follow the conventions"

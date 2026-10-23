@@ -37,7 +37,7 @@ C4Container
     ContainerDb(pg, "PostgreSQL 16", "PostgreSQL", "users, projects, tasks")
     ContainerDb(redis, "Redis 7", "Redis", "Rails cache for project and task lists")
     System_Ext(glitchtip, "GlitchTip", "Error tracking, Sentry protocol")
-    Rel(client, api, "JSON over HTTPS, X-User-Email and X-User-Token headers")
+    Rel(client, api, "JSON over HTTPS, bearer access token or legacy X-User-Email and X-User-Token headers")
     Rel(api, pg, "ActiveRecord")
     Rel(api, redis, "Rails.cache")
     Rel(api, glitchtip, "Sentry SDK events and relayed frontend envelopes")
@@ -51,7 +51,7 @@ C4Container
 | sessions | `app/controllers/api/v1/sessions_controller.rb`, `app/services/sessions/create.rb` | controller → service → model | `config/routes.rb:13` | Token sign-in: email and password in, the user's access token out. |
 | projects | `app/controllers/api/v1/projects_controller.rb`, `app/services/projects/` | controller → service → model → serializer | `config/routes.rb:15` | CRUD of the signed-in user's projects, list filtered by task status, cached. |
 | tasks | `app/controllers/api/v1/tasks_controller.rb`, `app/services/tasks/` | controller → service → model → serializer | `config/routes.rb:16` | CRUD of the tasks of one of the user's projects, cached list. |
-| api/v1 | `app/controllers/api/v1/base_controller.rb`, `app/controllers/concerns/`, `app/exceptions/api_exceptions.rb`, `app/models/ability.rb`, `app/serializers/`, `app/services/application_service.rb`, `app/services/base_application/authenticate.rb` | shared | `config/routes.rb:10` | Token authentication before every action, authorization, exception rendering, serializers and the service base class. |
+| api/v1 | `app/controllers/api/v1/base_controller.rb`, `app/controllers/concerns/`, `app/exceptions/api_exceptions.rb`, `app/models/ability.rb`, `app/serializers/`, `app/services/application_service.rb`, `app/services/base_application/authenticate.rb`, `app/services/auth/legacy_usage.rb` | shared | `config/routes.rb:10` | Token authentication before every action, authorization, exception rendering, serializers and the service base class. |
 | health | `app/controllers/health_controller.rb` | controller | `config/routes.rb:2` | `GET /health`: `status` and the `release` baked into the image (`APP_RELEASE`). |
 | errors tunnel | `app/controllers/errors_controller.rb`, `app/services/sentry_tunnel.rb` | controller → service | `config/routes.rb:3` | `POST /api/errors`: relays the frontend's Sentry envelopes to GlitchTip, only for the allowed DSN, size and rate limited. |
 | admin GlitchTip smoke | `app/controllers/admin/glitchtip_smoke_controller.rb`, `app/services/glitchtip_smoke.rb`, `lib/tasks/glitchtip.rake` | controller → service | `config/routes.rb:4` | Deliberate errors behind `SMOKE_TOKEN` that prove a deployment reports to GlitchTip; every refusal is a 404. |
@@ -63,8 +63,9 @@ C4Container
 - **Module wiring / registration:** a resource is a route under `namespace :api` / `namespace :v1`
   (`config/routes.rb:10`) and a controller inheriting `Api::V1::BaseController`
   (`app/controllers/api/v1/projects_controller.rb:1`) with `include Authorization` and CanCanCan
-  `load_and_authorize_resource` (`app/controllers/api/v1/projects_controller.rb:4`; nested:
-  `app/controllers/api/v1/tasks_controller.rb:5`).
+  `load_and_authorize_resource through: :current_user`, so a project is looked up among the signed-in user's own
+  (`app/controllers/api/v1/projects_controller.rb:4`); nested tasks load the project the same way and the task
+  through it (`app/controllers/api/v1/tasks_controller.rb:4`, `app/controllers/api/v1/tasks_controller.rb:5`).
 - **Controller → service → serializer:** the action calls `<Resource>::<Action>.call(...)`
   (`app/controllers/api/v1/projects_controller.rb:27`); the service subclasses `ApplicationService`
   (`app/services/application_service.rb:2`), returns `self` and exposes `success?`, `errors` and `status_error`
@@ -74,15 +75,19 @@ C4Container
   (`app/controllers/api/v1/sessions_controller.rb:8`).
 - **Error handling:** `ApiExceptionHandler` maps `ApiExceptions::*` to 403/404
   (`app/controllers/concerns/api_exception_handler.rb:5`, `app/exceptions/api_exceptions.rb:6`); `Authorization`
-  maps `CanCan::AccessDenied` to 403 (`app/controllers/concerns/authorization.rb:5`); a missing or wrong token is
-  401 `{ error: 'Not Authorized' }` (`app/controllers/api/v1/base_controller.rb:17`); validation errors are 422
+  maps `ActiveRecord::RecordNotFound` to 404 `{ error: 'Not Found' }`, which is also the answer for another user's
+  project or task (`app/controllers/concerns/authorization.rb:5`, ADR-0007), and `CanCan::AccessDenied` to 403
+  (`app/controllers/concerns/authorization.rb:6`); a missing or wrong token is
+  401 `{ error: 'Not Authorized' }` (`app/controllers/api/v1/base_controller.rb:18`); validation errors are 422
   with `full_messages` (`app/services/projects/create.rb:18`).
-- **Authentication:** `X-User-Email` + `X-User-Token` headers compared with `Devise.secure_compare`
-  (`app/services/base_application/authenticate.rb:18`), run as a `before_action` on every API controller
-  (`app/controllers/api/v1/base_controller.rb:4`); sign-up and sign-in skip it
-  (`app/controllers/api/v1/sessions_controller.rb:2`).
-- **Authorization:** one `Ability`: a user manages only their projects and the tasks of those projects
-  (`app/models/ability.rb:7`, `app/models/ability.rb:8`).
+- **Authentication:** a `before_action` on every API controller (`app/controllers/api/v1/base_controller.rb:4`):
+  an `Authorization: Bearer` access token decides alone (`app/controllers/api/v1/base_controller.rb:16`); only a
+  request without one falls back to the legacy `X-User-Email` + `X-User-Token` headers compared with
+  `Devise.secure_compare` (`app/services/base_application/authenticate.rb:18`), counted per user and day and
+  switched off by `LEGACY_AUTH_ENABLED=false` (`app/services/auth/legacy_usage.rb:1`, ADR-0005); sign-up and
+  sign-in skip it (`app/controllers/api/v1/sessions_controller.rb:2`).
+- **Authorization:** the owner-scoped lookup above comes first; one `Ability` is the second line: a user manages
+  only their projects and the tasks of those projects (`app/models/ability.rb:7`, `app/models/ability.rb:8`).
 - **IDs:** integer (bigint) primary keys, Rails defaults; foreign keys `user_id` / `project_id` with
   `add_foreign_key` (`db/schema.rb:22`, `db/schema.rb:52`).
 - **Persistence / DB access:** ActiveRecord through the user's associations (`app/services/projects/index.rb:40`),

@@ -28,6 +28,23 @@ RSpec.describe 'CORS' do
     expect(response.headers['Access-Control-Allow-Origin']).to eq(app_origin)
   end
 
+  it 'allows a preflight that sends the Authorization header from a configured origin' do
+    process :options, '/api/v1/projects', headers: {
+      'Origin' => app_origin,
+      'Access-Control-Request-Method' => 'GET',
+      'Access-Control-Request-Headers' => 'authorization, content-type'
+    }
+
+    expect(response.headers['Access-Control-Allow-Origin']).to eq(app_origin)
+    expect(response.headers['Access-Control-Allow-Headers'].downcase).to include('authorization')
+  end
+
+  it 'exposes Retry-After to the browser on answers to a configured origin' do
+    get '/health', headers: { 'Origin' => app_origin }
+
+    expect(response.headers['Access-Control-Expose-Headers']).to include('Retry-After')
+  end
+
   it 'gives an unknown origin no CORS headers' do
     preflight('https://evil.example.com')
     expect(response.headers['Access-Control-Allow-Origin']).to be_nil

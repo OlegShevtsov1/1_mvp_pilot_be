@@ -63,6 +63,10 @@ env:
     REDIS_URL: redis://<%= name %>-dev-redis:6379/0
     SENTRY_ENVIRONMENT: dev
     CORS_ALLOWED_ORIGINS: https://app.dev.<%= zone %>
+    # Public Google OAuth client id from the GitHub environment variable GOOGLE_CLIENT_ID; never committed, empty when unset.
+    GOOGLE_CLIENT_ID: <%= ENV.fetch('GOOGLE_CLIENT_ID', '').to_json %>
+    # Public OAuth client id of the web app from the GitHub environment variable OAUTH_CLIENT_ID; never committed, empty when unset.
+    OAUTH_CLIENT_ID: <%= ENV.fetch('OAUTH_CLIENT_ID', '').to_json %>
   secret:
     - SECRET_KEY_BASE
     - DATABASE_URL
