@@ -24,10 +24,10 @@
 | T17 | Add client-side routing, the first shared CSS tokens and the landing page | ui | 1_mvp_pilot_fe | OlegShevtsov1 | M | — | done |
 | T18 | Add the API client, the token store with refresh, the Content-Security-Policy and GOOGLE_CLIENT_ID config | ui | 1_mvp_pilot_fe | OlegShevtsov1 | L | T17 | done |
 | T19 | Build the sign-up and sign-in screens | ui | 1_mvp_pilot_fe | OlegShevtsov1 | L | T18 | done |
-| T20 | Add the Google sign-in button and exchange the ID token | ui | 1_mvp_pilot_fe | OlegShevtsov1 | M | T18 | todo |
+| T20 | Add the Google sign-in button and exchange the ID token | ui | 1_mvp_pilot_fe | OlegShevtsov1 | M | T18 | done |
 | T21 | Build the dashboard with the project list, status filter and project create, rename and delete | ui | 1_mvp_pilot_fe | OlegShevtsov1 | L | T18 | done |
-| T22 | Add task create and status change, the guided empty state and sign-out | ui | 1_mvp_pilot_fe | OlegShevtsov1 | L | T21 | todo |
-| T23 | Give the landing page a stylish visual design (design tokens, theme, hero) | ui | 1_mvp_pilot_fe | OlegShevtsov1 | M | T17 | todo |
+| T22 | Add task create and status change, the guided empty state and sign-out | ui | 1_mvp_pilot_fe | OlegShevtsov1 | L | T21 | done |
+| T23 | Give the landing page a stylish visual design (design tokens, theme, hero) | ui | 1_mvp_pilot_fe | OlegShevtsov1 | M | T17 | done |
 | T24 | Give the dashboard a stylish visual design on the T23 tokens | ui | 1_mvp_pilot_fe | OlegShevtsov1 | M | T22, T23 | todo |
 
 **Total:** 22 tasks — backend 16 tasks, about 9.75 person-days; frontend 6 tasks, about 5 person-days.

@@ -63,6 +63,7 @@ RSpec.describe 'OAuth tokens', type: :request do
   end
 
   it 'refuses a refresh token 30 days old' do
+    travel_to Time.zone.local(2026, 1, 1, 12, 0, 0).change(usec: 500_000), with_usec: true
     pair = sign_in
     travel 30.days
 

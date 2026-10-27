@@ -1,5 +1,6 @@
 # Doorkeeper's access token row, one per sign-in (ADR-0003). A refresh revokes the old row at once instead of when
-# the new token is first used, and a refresh token is refused 30 days after its row was issued (ADR-0006).
+# the new token is first used, and a refresh token is refused 30 days after its row was issued,
+# counted in whole seconds (ADR-0006).
 class OauthAccessToken < ApplicationRecord
   include ::Doorkeeper::Orm::ActiveRecord::Mixins::AccessToken
 
@@ -12,6 +13,6 @@ class OauthAccessToken < ApplicationRecord
 
   def self.by_refresh_token(refresh_token)
     token = super
-    token if token && token.created_at > REFRESH_TOKEN_IDLE_LIMIT.ago
+    token if token && token.created_at.to_i > REFRESH_TOKEN_IDLE_LIMIT.ago.to_i
   end
 end

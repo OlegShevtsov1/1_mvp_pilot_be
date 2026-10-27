@@ -22,6 +22,18 @@ its entry under `[Unreleased]` (checked by `changelog-check`); a release moves t
 
 ### Security
 
+## [0.3.1] - 2026-10-27
+
+### Fixed
+
+- A refresh token exactly 30 days old is refused even when its sign-in time has a fraction of a second; the
+  30-day limit is counted in whole seconds (PILOT-297).
+
+### Security
+
+- Update net-ssh to 7.3.8 (GHSA-vxj5-fg65-x765, GHSA-rpq3-v334-f5pm and five more net-ssh advisories) and crass
+  to 1.0.8 (GHSA-pq4g-8rxf-4g29), so bundler-audit passes again (PILOT-299).
+
 ## [0.3.0] - 2026-10-23
 
 ### Added
