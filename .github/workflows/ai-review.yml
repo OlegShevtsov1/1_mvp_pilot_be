@@ -81,7 +81,7 @@ jobs:
         if: steps.switch.outputs.enabled == 'true' && steps.skip.outputs.skip == 'false'
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
           prompt: |
             You review pull request #${{ github.event.pull_request.number || github.event.issue.number }} of the
@@ -118,7 +118,7 @@ jobs:
             comment is markdown with one bullet per finding, "**P1** `path:line` - problem - fix", grouped P0,
             P1, P2, or the single line "No findings.". The counts must equal the bullets. Do not post comments.
           claude_args: |
-            --model claude-sonnet-5
+            --model claude-sonnet-5-5
             --max-turns 25
             --allowedTools "Read,Glob,Grep"
             --disallowedTools "Bash,Write,Edit,MultiEdit,NotebookEdit,WebFetch,WebSearch,mcp__github_inline_comment__create_inline_comment"

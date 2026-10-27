@@ -1,7 +1,7 @@
 class Api::V1::TasksController < Api::V1::BaseController
   include Authorization
 
-  load_and_authorize_resource :project
+  load_and_authorize_resource :project, through: :current_user
   load_and_authorize_resource :task, through: :project
 
   def index

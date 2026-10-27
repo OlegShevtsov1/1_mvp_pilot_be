@@ -42,6 +42,23 @@ RSpec.describe 'config/deploy.yml' do
     expect(config.secrets_path).to eq('.kamal/secrets.prod')
   end
 
+  it 'passes GOOGLE_CLIENT_ID from the deploy environment as plain env, empty when unset' do
+    env = { 'PROD_VPN_IP' => '192.0.2.70', 'KAMAL_REGISTRY_SERVER' => 'registry.example.test' }
+
+    expect(load_config(env.merge('GOOGLE_CLIENT_ID' => 'placeholder-client-id.example.test')).env.clear['GOOGLE_CLIENT_ID'])
+      .to eq('placeholder-client-id.example.test')
+    expect(load_config(env.merge('GOOGLE_CLIENT_ID' => nil)).env.clear['GOOGLE_CLIENT_ID']).to eq('')
+  end
+
+  it 'passes OAUTH_CLIENT_ID from the deploy environment as plain env, empty when unset' do
+    env = { 'PROD_VPN_IP' => '192.0.2.70', 'KAMAL_REGISTRY_SERVER' => 'registry.example.test' }
+    with_client_id = load_config(env.merge('OAUTH_CLIENT_ID' => 'placeholder-oauth-client-id'))
+
+    expect(with_client_id.env.clear['OAUTH_CLIENT_ID']).to eq('placeholder-oauth-client-id')
+    expect(with_client_id.env.secret_keys).not_to include('OAUTH_CLIENT_ID')
+    expect(load_config(env.merge('OAUTH_CLIENT_ID' => nil)).env.clear['OAUTH_CLIENT_ID']).to eq('')
+  end
+
   it 'keeps the database and redis data in named volumes' do
     expect(config.accessories.map(&:service_name)).to eq([ "#{name}-db", "#{name}-redis" ])
     expect(config.accessories.map(&:volume_args)).to eq([

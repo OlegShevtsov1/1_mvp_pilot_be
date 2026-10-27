@@ -5,12 +5,12 @@
 # triggers (deploy/dev_deploy_gate.sh). GitHub reports every workflow_run run on main with main's
 # head sha, so a run is matched by the commit it deploys: its title "Dev Deploy sha-<sha>" or, for a
 # run titled just "Dev Deploy" (created from a workflow file without run-name), the HEAD_SHA its
-# Gate log echoes. A run of the commit that did not deploy it is not this one; the commit counts as
-# superseded only when a run deployed a newer commit that contains it. GitHub does not always create
-# the second workflow_run run, so when both CI runs succeeded and, for WAIT_DEV_DEPLOY_GRACE
-# seconds, no Dev Deploy run of the commit is running, Dev Deploy is dispatched once on the
-# commit's branch (only while that branch is still the commit) and that run is awaited instead,
-# with a warning. --rollback dispatches action=rollback on main and waits for that run.
+# Gate log echoes, read once the run completed. A run of the commit that did not deploy it is not
+# this one; the commit counts as superseded only when a run deployed a newer commit that contains
+# it. GitHub does not always create the second workflow_run run, so when both CI runs succeeded
+# and, for WAIT_DEV_DEPLOY_GRACE seconds, no Dev Deploy run of the commit is running, Dev Deploy is
+# dispatched once on the commit's branch (only while that branch is still the commit) and that run
+# is awaited instead, with a warning. --rollback dispatches action=rollback on main and waits for that run.
 #
 # Usage: bin/wait-dev-deploy [<40-hex sha>]   (default: HEAD)
 #        bin/wait-dev-deploy --rollback
@@ -22,7 +22,13 @@ set -euo pipefail
 timeout="${WAIT_DEV_DEPLOY_TIMEOUT:-1200}"
 interval="${WAIT_DEV_DEPLOY_INTERVAL:-15}"
 grace="${WAIT_DEV_DEPLOY_GRACE:-120}"
-deadline=$(( SECONDS + timeout ))
+
+# Wall-clock seconds; a command rather than SECONDS so the spec can fake the clock.
+now() {
+  date +%s
+}
+
+deadline=$(( $(now) + timeout ))
 sha=''
 
 usage() {
@@ -36,7 +42,7 @@ fail() {
 }
 
 check_deadline() {
-  (( SECONDS < deadline )) || fail "timed out after ${timeout}s; last seen:$1"
+  (( $(now) < deadline )) || fail "timed out after ${timeout}s; last seen:$1"
 }
 
 view() {
@@ -71,8 +77,9 @@ ci_state() {
     | jq -r 'if length == 0 then "none" elif .[0].status != "completed" then "pending" else .[0].conclusion end'
 }
 
-# Sets run to the sha a workflow_run Dev Deploy run deploys, unknown while its Gate job runs, or
-# empty for a run of another kind. $1 run id, $2 title, $3 its `gh run view --json`.
+# Sets run to the sha a workflow_run Dev Deploy run deploys, unknown until the run completed (gh
+# refuses the logs of a run in progress), or empty for a run of another kind. $1 run id, $2 title,
+# $3 its `gh run view --json`.
 run_sha() {
   local gate log
   run=''
@@ -80,7 +87,7 @@ run_sha() {
     run="${BASH_REMATCH[1]}"
   elif [[ "$2" == 'Dev Deploy' ]]; then
     if [[ -z "${run_shas[$1]:-}" ]]; then
-      gate="$(jq -r 'first(.jobs[] | select(.name == "Gate" and .status == "completed")) | .databaseId' <<< "$3")"
+      gate="$(jq -r 'select(.status == "completed") | first(.jobs[] | select(.name == "Gate" and .status == "completed")) | .databaseId' <<< "$3")"
       if [[ -z "${gate}" ]]; then run=unknown; return; fi
       log="$(gh run view --job "${gate}" --log)"
       log="$(grep -m 1 -oE 'HEAD_SHA: [0-9a-f]{40}' <<< "${log}" || true)"
@@ -177,8 +184,8 @@ wait_for_merge_deploy() {
     seen+=" Rails Tests ${tests}; Rails CI ${lint}"
 
     if (( ! pending )) && [[ "${tests}" == success && "${lint}" == success ]]; then
-      quiet_since="${quiet_since:-${SECONDS}}"
-      if (( SECONDS - quiet_since >= grace )); then
+      quiet_since="${quiet_since:-$(now)}"
+      if (( $(now) - quiet_since >= grace )); then
         branch="$(ci_branch)"
         head="$(gh api "repos/{owner}/{repo}/commits/${branch}" | jq -r .sha)"
         if [[ "${head}" == "${sha}" ]]; then

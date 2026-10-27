@@ -1,0 +1,740 @@
+{
+  "slug": "todolist",
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Promote the staged oauth_applications and oauth_access_tokens migrations",
+      "layer": "migration",
+      "deps": [],
+      "acs": [
+        "AC-08"
+      ],
+      "dod": [
+        "A migration spec shows both tables exist with the unique indexes on `uid`, `token` and `refresh_token` and the two foreign keys",
+        "The migrations apply and revert cleanly on a database that already holds users, projects and tasks",
+        "`db/schema.rb` changes only as the output of running the migrations",
+        "Lint and Brakeman clean"
+      ],
+      "files_hint": [
+        "docs/features/todolist/migrations/01_create_oauth_applications.rb",
+        "docs/features/todolist/migrations/02_create_oauth_access_tokens.rb"
+      ],
+      "estimate": "S",
+      "owner": "OlegShevtsov1",
+      "status": "done",
+      "repo": "1_mvp_pilot_be",
+      "trello_card_id": "6ada300be203f5cce1009810",
+      "trello_card_id_short": 228
+    },
+    {
+      "id": "T2",
+      "title": "Promote the staged identities and legacy_token_uses migrations",
+      "layer": "migration",
+      "deps": [
+        "T1"
+      ],
+      "acs": [
+        "AC-06",
+        "AC-12"
+      ],
+      "dod": [
+        "A migration spec shows `identities` has unique `(provider, uid)` and unique `(user_id, provider)`, and `legacy_token_uses` has unique `(user_id, used_on)`",
+        "The migrations apply and revert cleanly",
+        "Migrations 05 and 06 are still only under `docs/features/todolist/migrations/`",
+        "Lint and Brakeman clean"
+      ],
+      "files_hint": [
+        "docs/features/todolist/migrations/03_create_identities.rb",
+        "docs/features/todolist/migrations/04_create_legacy_token_uses.rb"
+      ],
+      "estimate": "S",
+      "owner": "OlegShevtsov1",
+      "status": "done",
+      "repo": "1_mvp_pilot_be",
+      "trello_card_id": "6ada300defb5face25c4bdc3",
+      "trello_card_id_short": 229
+    },
+    {
+      "id": "T3",
+      "title": "Install Doorkeeper with the password grant, one-hour tokens and refresh rotation",
+      "layer": "infra",
+      "deps": [
+        "T1"
+      ],
+      "acs": [
+        "AC-08"
+      ],
+      "dod": [
+        "A correct email and password at `/oauth/token` returns an access and a refresh token and leaves other devices' tokens valid (AC-08)",
+        "A refresh replaces the pair and revokes the old one; a refresh token 30 days old or revoked is refused",
+        "Stored token and refresh token values are hashes, not the plain secrets",
+        "Doorkeeper's own `doorkeeper:migration` output for the installed version differs from `oauth_applications` and `oauth_access_tokens` only where data-model.md 'Staged migrations' allows; any other difference gets a new migration",
+        "Lint and Brakeman clean"
+      ],
+      "files_hint": [
+        "Gemfile",
+        "Gemfile.lock",
+        "config/initializers/doorkeeper.rb",
+        "config/routes.rb",
+        "db/seeds.rb",
+        "spec/requests/oauth/"
+      ],
+      "estimate": "L",
+      "owner": "OlegShevtsov1",
+      "status": "done",
+      "repo": "1_mvp_pilot_be",
+      "trello_card_id": "6ada300ec0c42e68b542d018",
+      "trello_card_id_short": 230
+    },
+    {
+      "id": "T4",
+      "title": "Add the user associations, Identity and LegacyTokenUse models and the Google-user password rule",
+      "layer": "domain",
+      "deps": [
+        "T1",
+        "T2"
+      ],
+      "acs": [
+        "AC-06",
+        "AC-12"
+      ],
+      "dod": [
+        "Model specs cover the associations, the uniqueness validations and `dependent` behaviour",
+        "Destroying a user with tokens, an identity and legacy-use rows succeeds and removes them",
+        "A user with an identity and no password is valid; a password user without one still needs a password",
+        "Lint and Brakeman clean"
+      ],
+      "files_hint": [
+        "app/models/",
+        "spec/models/",
+        "spec/factories/"
+      ],
+      "estimate": "M",
+      "owner": "OlegShevtsov1",
+      "status": "done",
+      "repo": "1_mvp_pilot_be",
+      "trello_card_id": "6ada301080328fe03378e96d",
+      "trello_card_id_short": 231
+    },
+    {
+      "id": "T5",
+      "title": "Authenticate with a bearer token first, fall back to the legacy headers and count their use",
+      "layer": "app",
+      "deps": [
+        "T3",
+        "T4"
+      ],
+      "acs": [
+        "AC-12",
+        "AC-13"
+      ],
+      "dod": [
+        "A valid bearer token and a valid legacy pair both give the same access to the user's own data (AC-12)",
+        "Each legacy request adds one to today's count for that user; bearer requests add nothing; a pipeline-marked request adds nothing",
+        "With `LEGACY_AUTH_ENABLED` off a legacy request is refused with the existing Not Authorized answer and the user's data is unchanged (AC-13)",
+        "A revoked or expired bearer token is refused and does not fall back to a stale legacy pair for another user",
+        "Lint and Brakeman clean"
+      ],
+      "files_hint": [
+        "app/controllers/api/v1/base_controller.rb",
+        "app/services/base_application/",
+        "app/services/auth/legacy_usage.rb",
+        "spec/services/",
+        "spec/controllers/"
+      ],
+      "estimate": "L",
+      "owner": "OlegShevtsov1",
+      "status": "done",
+      "repo": "1_mvp_pilot_be",
+      "trello_card_id": "6ada3011ff7becd866846511",
+      "trello_card_id_short": 232
+    },
+    {
+      "id": "T6",
+      "title": "Sign-up issues a token pair and enforces the sign-up limit",
+      "layer": "app",
+      "deps": [
+        "T3"
+      ],
+      "acs": [
+        "AC-02",
+        "AC-03",
+        "AC-04",
+        "AC-04b"
+      ],
+      "dod": [
+        "Valid sign-up returns the three new fields and the legacy token (AC-02)",
+        "Malformed email, short password and mismatched confirmation create no user and name the field (AC-03)",
+        "A taken email creates no second user and says an account exists (AC-04)",
+        "The 6th sign-up in an hour from one source is refused with a wait message (AC-04b)",
+        "Lint and Brakeman clean"
+      ],
+      "files_hint": [
+        "app/controllers/api/v1/users_controller.rb",
+        "app/services/users/create.rb",
+        "spec/services/users/",
+        "spec/controllers/"
+      ],
+      "estimate": "M",
+      "owner": "OlegShevtsov1",
+      "status": "done",
+      "repo": "1_mvp_pilot_be",
+      "trello_card_id": "6ada30145dce1c2b54f4448c",
+      "trello_card_id_short": 233
+    },
+    {
+      "id": "T7",
+      "title": "Count failed sign-ins per source and refuse above ten a minute before the password is checked",
+      "layer": "app",
+      "deps": [
+        "T3"
+      ],
+      "acs": [
+        "AC-09",
+        "AC-10"
+      ],
+      "dod": [
+        "The 11th failed sign-in within a minute from one source is refused without checking the password and with a Retry-After header (AC-10)",
+        "Successful sign-ins are not counted",
+        "An unknown email and a wrong password give identical answers (AC-09)",
+        "A request spec pins that the client address comes from the proxy header only when it comes from the proxy",
+        "Lint and Brakeman clean"
+      ],
+      "files_hint": [
+        "app/controllers/api/v1/sessions_controller.rb",
+        "app/services/auth/failed_sign_in_limit.rb",
+        "config/initializers/doorkeeper.rb",
+        "config/environments/production.rb",
+        "spec/services/auth/",
+        "spec/requests/"
+      ],
+      "estimate": "L",
+      "owner": "OlegShevtsov1",
+      "status": "done",
+      "repo": "1_mvp_pilot_be",
+      "trello_card_id": "6ada30156ff96ef986b37c35",
+      "trello_card_id_short": 234
+    },
+    {
+      "id": "T8",
+      "title": "Verify a Google ID token: signature, audience, issuer, expiry and verified email",
+      "layer": "app",
+      "deps": [],
+      "acs": [
+        "AC-07"
+      ],
+      "dod": [
+        "A token with a valid signature, our audience, Google's issuer, a future expiry and a verified email returns the email and account id",
+        "Wrong signature, wrong audience, wrong issuer, expired, or unverified email each return a refusal (AC-07)",
+        "Keys are cached and refreshed when a key id is unknown; tests use fixture keys, no real network",
+        "Lint and Brakeman clean"
+      ],
+      "files_hint": [
+        "app/services/auth/google_id_token_verifier.rb",
+        "spec/services/auth/"
+      ],
+      "estimate": "M",
+      "owner": "OlegShevtsov1",
+      "status": "done",
+      "repo": "1_mvp_pilot_be",
+      "trello_card_id": "6ada30173ec7e47a46f9a8fd",
+      "trello_card_id_short": 235
+    },
+    {
+      "id": "T9",
+      "title": "Add the google_id_token grant that creates a user or links Google and cancels all existing access",
+      "layer": "app",
+      "deps": [
+        "T3",
+        "T4",
+        "T8"
+      ],
+      "acs": [
+        "AC-05",
+        "AC-06",
+        "AC-07"
+      ],
+      "dod": [
+        "An unknown verified email creates a user with an identity and returns a token pair (AC-05)",
+        "A verified email of a password user links Google; afterwards the old password sign-in, every earlier access and refresh token and the legacy token are refused, and the existing projects are visible with the new token (AC-06)",
+        "A capital-letter variant of the email links the same user, never a second one (AC-06)",
+        "Unverified email or a cancelled/invalid token creates and links nothing (AC-07)",
+        "Lint and Brakeman clean"
+      ],
+      "files_hint": [
+        "config/initializers/doorkeeper.rb",
+        "app/services/auth/google_sign_in.rb",
+        "app/services/auth/link_identity.rb",
+        "spec/services/auth/",
+        "spec/requests/oauth/"
+      ],
+      "estimate": "L",
+      "owner": "OlegShevtsov1",
+      "status": "done",
+      "repo": "1_mvp_pilot_be",
+      "trello_card_id": "6ada30186c24c8e61f65f8f6",
+      "trello_card_id_short": 236
+    },
+    {
+      "id": "T10",
+      "title": "Add POST /api/v1/sign_out for both authentication schemes",
+      "layer": "ports",
+      "deps": [
+        "T5"
+      ],
+      "acs": [
+        "AC-11",
+        "AC-11b"
+      ],
+      "dod": [
+        "After sign-out on device A its tokens are refused while device B still works (AC-11)",
+        "Sign-out with the legacy headers makes the old legacy token useless for every device using it (AC-11b)",
+        "An unauthenticated call gets the existing Not Authorized answer",
+        "Lint and Brakeman clean"
+      ],
+      "files_hint": [
+        "app/controllers/api/v1/sign_out_controller.rb",
+        "app/services/auth/revoke_device.rb",
+        "config/routes.rb",
+        "spec/"
+      ],
+      "estimate": "M",
+      "owner": "OlegShevtsov1",
+      "status": "done",
+      "repo": "1_mvp_pilot_be",
+      "trello_card_id": "6ada301afb6df8ffd062388b",
+      "trello_card_id_short": 237
+    },
+    {
+      "id": "T11",
+      "title": "Scope project and task lookups to the owner so other users' items are not found",
+      "layer": "ports",
+      "deps": [
+        "T5"
+      ],
+      "acs": [
+        "AC-17",
+        "AC-22"
+      ],
+      "dod": [
+        "Showing, updating or deleting another user's project or task gives the same answer as a missing one, for projects and tasks alike (AC-17)",
+        "A request without valid access gets Not Authorized and reveals nothing (AC-22)",
+        "The owner's own operations are unchanged",
+        "Lint and Brakeman clean"
+      ],
+      "files_hint": [
+        "app/controllers/api/v1/projects_controller.rb",
+        "app/controllers/api/v1/tasks_controller.rb",
+        "app/controllers/concerns/",
+        "spec/controllers/",
+        "spec/services/"
+      ],
+      "estimate": "M",
+      "owner": "OlegShevtsov1",
+      "status": "done",
+      "repo": "1_mvp_pilot_be",
+      "trello_card_id": "6ada301c864b525de5603a4d",
+      "trello_card_id_short": 238
+    },
+    {
+      "id": "T12",
+      "title": "Allow the Authorization header in CORS and read GOOGLE_CLIENT_ID from the environment",
+      "layer": "wiring",
+      "deps": [],
+      "acs": [
+        "AC-08"
+      ],
+      "dod": [
+        "A CORS preflight with `Authorization` is allowed for the configured origins",
+        "No client id or secret value is committed",
+        "Lint and Brakeman clean"
+      ],
+      "files_hint": [
+        "config/initializers/cors.rb",
+        "config/project.env",
+        "README.md",
+        "spec/config/"
+      ],
+      "estimate": "S",
+      "owner": "OlegShevtsov1",
+      "status": "done",
+      "repo": "1_mvp_pilot_be",
+      "type": "chore",
+      "trello_card_id": "6ada301ee5dbae668ea8ff70",
+      "trello_card_id_short": 239
+    },
+    {
+      "id": "T13",
+      "title": "Add the daily token and legacy-use purge and its Kamal cron role",
+      "layer": "infra",
+      "deps": [
+        "T1",
+        "T2"
+      ],
+      "acs": [
+        "AC-08"
+      ],
+      "dod": [
+        "A task spec shows old revoked and expired rows are deleted and recent or active rows are kept",
+        "Legacy-use rows older than 60 days are deleted, newer ones kept",
+        "The deploy files define the `cron` role without changing the `web` role; a failed run raises an error that reaches GlitchTip",
+        "Lint and Brakeman clean"
+      ],
+      "files_hint": [
+        "lib/tasks/",
+        "config/deploy.yml",
+        "config/deploy.dev.yml",
+        "spec/lib/tasks/"
+      ],
+      "estimate": "M",
+      "owner": "OlegShevtsov1",
+      "status": "todo",
+      "repo": "1_mvp_pilot_be",
+      "trello_card_id": "6ada301f2350e23cb303336a",
+      "trello_card_id_short": 240
+    },
+    {
+      "id": "T14",
+      "title": "Document the sign-up, token, sign-in, sign-out and profile operations in the rswag specs and regenerate swagger.json",
+      "layer": "tests",
+      "deps": [
+        "T6",
+        "T7",
+        "T9",
+        "T10"
+      ],
+      "acs": [
+        "AC-02",
+        "AC-05",
+        "AC-08",
+        "AC-11"
+      ],
+      "dod": [
+        "Each operation has specs for every response listed in openapi.yaml (200/201/204, 400, 401, 422, 429)",
+        "`swagger/v1/swagger.json` is regenerated and lists the bearer scheme and the deprecated legacy sign-in",
+        "A spec fails if a response drifts from the schema",
+        "Lint and Brakeman clean"
+      ],
+      "files_hint": [
+        "spec/requests/api/v1/",
+        "spec/requests/oauth/",
+        "spec/schemas/",
+        "spec/swagger_helper.rb",
+        "swagger/v1/swagger.json"
+      ],
+      "estimate": "L",
+      "owner": "OlegShevtsov1",
+      "status": "todo",
+      "repo": "1_mvp_pilot_be",
+      "trello_card_id": "6ada3021e1ae5b7b00d04ea8",
+      "trello_card_id_short": 241
+    },
+    {
+      "id": "T15",
+      "title": "Run the project and task rswag specs under bearer auth and document the 404 answers",
+      "layer": "tests",
+      "deps": [
+        "T11"
+      ],
+      "acs": [
+        "AC-14",
+        "AC-15",
+        "AC-16",
+        "AC-18",
+        "AC-19",
+        "AC-20"
+      ],
+      "dod": [
+        "Project create and rename, length limits and delete-with-tasks behave as AC-14, AC-15 and AC-16 say",
+        "Task create (starts as not started), status change and validation behave as AC-18 and AC-19 say; the status filter behaves as AC-20",
+        "Every project and task operation documents 401 and 404 and no longer documents 403",
+        "Lint and Brakeman clean"
+      ],
+      "files_hint": [
+        "spec/requests/api/v1/",
+        "spec/support/auth_helper.rb",
+        "spec/schemas/",
+        "swagger/v1/swagger.json"
+      ],
+      "estimate": "M",
+      "owner": "OlegShevtsov1",
+      "status": "todo",
+      "repo": "1_mvp_pilot_be",
+      "trello_card_id": "6ada3022be0eb522959415a5",
+      "trello_card_id_short": 242
+    },
+    {
+      "id": "T16",
+      "title": "Make bin/swagger_smoke check the contract with a bearer token and keep a marked legacy pass",
+      "layer": "tests",
+      "deps": [
+        "T5",
+        "T14",
+        "T15"
+      ],
+      "acs": [
+        "AC-12"
+      ],
+      "dod": [
+        "The bearer pass checks sign-up, `me`, project and task create, read, update and delete, and sign-out",
+        "The legacy pass runs only while the legacy path is enabled and adds nothing to the legacy-use count",
+        "Another user's project answers 404 in the smoke check",
+        "Lint clean; the existing spec for the script is updated and green"
+      ],
+      "files_hint": [
+        "bin/swagger_smoke",
+        "spec/bin/",
+        "bin/wait-dev-deploy"
+      ],
+      "estimate": "M",
+      "owner": "OlegShevtsov1",
+      "status": "todo",
+      "repo": "1_mvp_pilot_be",
+      "type": "chore",
+      "trello_card_id": "6ada302404cbe77bba09adae",
+      "trello_card_id_short": 243
+    },
+    {
+      "id": "T17",
+      "title": "Add client-side routing, the first shared CSS tokens and the landing page",
+      "layer": "ui",
+      "deps": [],
+      "acs": [
+        "AC-01"
+      ],
+      "dod": [
+        "The landing route renders the explanation and both start options and no project data (AC-01)",
+        "Unknown paths still fall back to the app; the existing config, Sentry and error-boundary tests stay green",
+        "No colour or size is hard-coded outside `tokens.css` in the new files",
+        "Lint, typecheck and build clean"
+      ],
+      "files_hint": [
+        "src/main.tsx",
+        "src/App.tsx",
+        "src/routes/",
+        "src/styles/tokens.css",
+        "package.json"
+      ],
+      "estimate": "M",
+      "owner": "OlegShevtsov1",
+      "status": "done",
+      "repo": "1_mvp_pilot_fe",
+      "trello_card_id": "6ada30268de1eb7d9f1b5358",
+      "trello_card_id_short": 244
+    },
+    {
+      "id": "T18",
+      "title": "Add the API client, the token store with refresh, the Content-Security-Policy and GOOGLE_CLIENT_ID config",
+      "layer": "ui",
+      "deps": [
+        "T17"
+      ],
+      "acs": [],
+      "dod": [
+        "An expired access token is refreshed once and the request repeated without losing the caller's input",
+        "A refused refresh clears the stored tokens and routes to sign-in",
+        "The nginx policy test shows no inline script is allowed and only the app origin and Google are permitted",
+        "`/config.js` carries the client id and the bundle check still shows no environment value compiled in",
+        "Lint, typecheck and build clean"
+      ],
+      "files_hint": [
+        "src/api/client.ts",
+        "src/auth/tokenStore.ts",
+        "src/config.ts",
+        "docker/40-config-js.sh",
+        "nginx.conf",
+        "src/**/*.test.ts"
+      ],
+      "estimate": "L",
+      "owner": "OlegShevtsov1",
+      "status": "done",
+      "repo": "1_mvp_pilot_fe",
+      "trello_card_id": "6ada30271311a54c2a3ae1da",
+      "trello_card_id_short": 245
+    },
+    {
+      "id": "T19",
+      "title": "Build the sign-up and sign-in screens",
+      "layer": "ui",
+      "deps": [
+        "T18"
+      ],
+      "acs": [
+        "AC-02",
+        "AC-03",
+        "AC-04",
+        "AC-08",
+        "AC-09",
+        "AC-10"
+      ],
+      "dod": [
+        "Valid sign-up and sign-in store the token pair and open the dashboard (AC-02, AC-08)",
+        "Field errors are shown per field (AC-03); a taken email says to sign in (AC-04)",
+        "Wrong email and wrong password show the same message (AC-09)",
+        "A rate-limit answer shows a wait message (AC-10)",
+        "Lint, typecheck and build clean"
+      ],
+      "files_hint": [
+        "src/routes/SignUp.tsx",
+        "src/routes/SignIn.tsx",
+        "src/**/*.test.tsx"
+      ],
+      "estimate": "L",
+      "owner": "OlegShevtsov1",
+      "status": "done",
+      "repo": "1_mvp_pilot_fe",
+      "trello_card_id": "6ada3029b4218d225c0f28a2",
+      "trello_card_id_short": 246
+    },
+    {
+      "id": "T20",
+      "title": "Add the Google sign-in button and exchange the ID token",
+      "layer": "ui",
+      "deps": [
+        "T18"
+      ],
+      "acs": [
+        "AC-05",
+        "AC-06",
+        "AC-07"
+      ],
+      "dod": [
+        "A successful exchange stores the pair and opens the dashboard with the user's existing projects (AC-05, AC-06)",
+        "A refusal or a cancelled step shows the message and changes nothing (AC-07)",
+        "The Google script is not loaded on other routes",
+        "Lint, typecheck and build clean"
+      ],
+      "files_hint": [
+        "src/auth/google.ts",
+        "src/routes/SignIn.tsx",
+        "src/routes/SignUp.tsx",
+        "src/**/*.test.tsx"
+      ],
+      "estimate": "M",
+      "owner": "OlegShevtsov1",
+      "status": "done",
+      "repo": "1_mvp_pilot_fe",
+      "trello_card_id": "6ada302b59b342814a23c57e",
+      "trello_card_id_short": 247
+    },
+    {
+      "id": "T21",
+      "title": "Build the dashboard with the project list, status filter and project create, rename and delete",
+      "layer": "ui",
+      "deps": [
+        "T18"
+      ],
+      "acs": [
+        "AC-14",
+        "AC-15",
+        "AC-16",
+        "AC-20",
+        "AC-22"
+      ],
+      "dod": [
+        "A signed-out visitor opening the dashboard is sent to sign-in and sees no data (AC-22)",
+        "The list shows only the user's data; the status filter shows only matching projects (AC-20)",
+        "Create and rename show the new name; wrong lengths show the allowed length (AC-14, AC-15)",
+        "Deleting a project with tasks shows why it is kept (AC-16)",
+        "Lint, typecheck and build clean"
+      ],
+      "files_hint": [
+        "src/routes/Dashboard.tsx",
+        "src/components/",
+        "src/**/*.test.tsx"
+      ],
+      "estimate": "L",
+      "owner": "OlegShevtsov1",
+      "status": "done",
+      "repo": "1_mvp_pilot_fe",
+      "trello_card_id": "6ada302c9441d03f6d556a04",
+      "trello_card_id_short": 248
+    },
+    {
+      "id": "T22",
+      "title": "Add task create and status change, the guided empty state and sign-out",
+      "layer": "ui",
+      "deps": [
+        "T21"
+      ],
+      "acs": [
+        "AC-11",
+        "AC-18",
+        "AC-19",
+        "AC-21"
+      ],
+      "dod": [
+        "A new task appears as not started and each status change takes one action (AC-18)",
+        "Empty name or description shows what is allowed (AC-19)",
+        "A user with no projects is guided to a first project and then a first task (AC-21)",
+        "Sign-out clears the tokens and shows sign-in (AC-11)",
+        "Lint, typecheck and build clean"
+      ],
+      "files_hint": [
+        "src/routes/Dashboard.tsx",
+        "src/components/",
+        "src/**/*.test.tsx"
+      ],
+      "estimate": "L",
+      "owner": "OlegShevtsov1",
+      "status": "done",
+      "repo": "1_mvp_pilot_fe",
+      "trello_card_id": "6ada302e8986b27f7ace2d19",
+      "trello_card_id_short": 249
+    },
+    {
+      "id": "T23",
+      "title": "Give the landing page a stylish visual design (design tokens, theme, hero)",
+      "layer": "ui",
+      "deps": [
+        "T17"
+      ],
+      "acs": [
+        "AC-01"
+      ],
+      "dod": [
+        "Design tokens (colour, type scale, spacing, radius, shadow) in one place; light and dark theme follow the system setting",
+        "Landing hero with a visual and a clear call to action; responsive from 360 px; WCAG AA contrast; focus states; prefers-reduced-motion respected",
+        "No new heavy UI library without an ADR; lint, typecheck, tests and build green; e2e screenshot of the landing page"
+      ],
+      "files_hint": [
+        "src/styles/",
+        "src/pages/Landing*",
+        "e2e/"
+      ],
+      "estimate": "M",
+      "owner": "OlegShevtsov1",
+      "status": "done",
+      "repo": "1_mvp_pilot_fe",
+      "trello_card_id": "6ada776049f5d0093b86538e",
+      "trello_card_id_short": 269
+    },
+    {
+      "id": "T24",
+      "title": "Give the dashboard a stylish visual design on the T23 tokens",
+      "layer": "ui",
+      "deps": [
+        "T22",
+        "T23"
+      ],
+      "acs": [
+        "AC-14"
+      ],
+      "dod": [
+        "Dashboard uses the T23 design tokens; polished project and task cards, filters, empty/loading/error states",
+        "Responsive from 360 px; WCAG AA contrast; focus states; prefers-reduced-motion respected",
+        "Lint, typecheck, tests and build green; e2e screenshot of the dashboard"
+      ],
+      "files_hint": [
+        "src/pages/Dashboard*",
+        "src/components/",
+        "e2e/"
+      ],
+      "estimate": "M",
+      "owner": "OlegShevtsov1",
+      "status": "todo",
+      "repo": "1_mvp_pilot_fe",
+      "trello_card_id_short": 273
+    }
+  ]
+}

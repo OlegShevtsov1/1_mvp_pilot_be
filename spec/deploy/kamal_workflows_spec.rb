@@ -70,6 +70,14 @@ RSpec.describe 'prod workflows' do
       end
     end
 
+    it 'passes the GOOGLE_CLIENT_ID environment variable to Kamal in the run step' do
+      expect(step(jobs.fetch(job_name), run_step).dig('env', 'GOOGLE_CLIENT_ID')).to eq('${{ vars.GOOGLE_CLIENT_ID }}')
+    end
+
+    it 'passes the OAUTH_CLIENT_ID environment variable to Kamal in the run step' do
+      expect(step(jobs.fetch(job_name), run_step).dig('env', 'OAUTH_CLIENT_ID')).to eq('${{ vars.OAUTH_CLIENT_ID }}')
+    end
+
     it 'connects the VPN before Kamal and always disconnects it' do
       uses = jobs.fetch(job_name).fetch('steps').map { |s| s['uses'].to_s }
       up = uses.index { |u| u == './infra-helpers/.github/actions/vpn-up' }

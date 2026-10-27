@@ -22,6 +22,68 @@ its entry under `[Unreleased]` (checked by `changelog-check`); a release moves t
 
 ### Security
 
+## [0.3.1] - 2026-10-27
+
+### Fixed
+
+- A refresh token exactly 30 days old is refused even when its sign-in time has a fraction of a second; the
+  30-day limit is counted in whole seconds (PILOT-297).
+
+### Security
+
+- Update net-ssh to 7.3.8 (GHSA-vxj5-fg65-x765, GHSA-rpq3-v334-f5pm and five more net-ssh advisories) and crass
+  to 1.0.8 (GHSA-pq4g-8rxf-4g29), so bundler-audit passes again (PILOT-299).
+
+## [0.3.0] - 2026-10-23
+
+### Added
+
+- A Google ID token verifier for the coming Google sign-in: it accepts only a token Google signed for our
+  client, unexpired, with a verified email, and caches Google's signing keys, refetching them for an unknown key
+  id (PILOT-222, T8).
+- Database tables `oauth_applications` and `oauth_access_tokens` for per-device access and refresh tokens
+  (todolist, PILOT-222).
+- Email and password sign-in at `POST /oauth/token` (Doorkeeper password grant): one access token per device,
+  valid one hour, and a rotating refresh token refused after 30 days; `POST /oauth/revoke`; the container creates
+  the public web client from `OAUTH_CLIENT_ID` (todolist, PILOT-230).
+- Database tables `identities` (the Google account linked to a user) and `legacy_token_uses` (daily count of
+  legacy access token use per user) (todolist, PILOT-229, T2). Nothing reads them until the models and
+  authentication changes ship.
+- Sign-up also signs the device in: `POST /api/v1/users` returns its own `access_token`, `refresh_token` and
+  `expires_in` next to the legacy `authentication_token`; more than 5 sign-ups an hour from one address are refused
+  with 429 and `Retry-After`; a taken email says to sign in instead (todolist, PILOT-233).
+- Models for the Google account linked to a user and the daily legacy access token count; a user who signed in
+  with Google may have no password, and deleting a user also deletes their access tokens, Google link and
+  legacy-use rows (todolist, PILOT-231, T4).
+- API requests accept a per-device bearer access token (`Authorization: Bearer …`); the legacy email and token
+  headers keep working until the cutoff, each use is counted per user and day, and `LEGACY_AUTH_ENABLED=false`
+  refuses them (todolist, PILOT-232, T5).
+- Google sign-in at `POST /oauth/token` (`grant_type=google_id_token`): a Google-verified email with no user
+  creates one; the email of an existing user (ignoring capital letters) links Google to them and cancels their
+  password, every access and refresh token and the legacy access token; anything Google does not vouch for creates
+  and links nothing (todolist, PILOT-236, T9).
+- Sign-out at `POST /api/v1/sign_out`: with an access token it ends this device's access and refresh token while
+  other devices keep working; with the legacy headers it rotates the legacy access token, which then stops working
+  on every device that used it (todolist, PILOT-237, T10).
+- Sign-in is capped per address: after 10 failed sign-ins in a minute, `POST /oauth/token` (password) and
+  `POST /api/v1/sign_in` answer 429 with `Retry-After: 60` without checking the password; failures at both count
+  together, successful sign-ins are not counted, and the address comes from kamal-proxy's forwarded header only
+  when the request comes from the proxy (todolist, PILOT-234, T7).
+
+### Changed
+
+- Another user's project or task now answers 404 `{ "error": "Not Found" }`, exactly like a missing one, instead
+  of 403 on show, change, delete and the task routes under it; a missing project or task answers the same JSON body
+  (todolist, PILOT-238, T11, ADR-0007).
+
+### Fixed
+
+- `bin/wait-dev-deploy` reads the Gate log of a Dev Deploy run titled just `Dev Deploy` only after the run
+  completed and keeps polling it until then, instead of exiting 1 with "run <id> is still in progress"
+  (PILOT-166).
+- The `bin/wait-dev-deploy` spec no longer depends on wall time: the script reads the clock through `date +%s`,
+  which the spec fakes, so its poll count is deterministic (PILOT-200).
+
 ## [0.2.0] - 2026-10-20
 
 ### Added

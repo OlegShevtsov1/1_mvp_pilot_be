@@ -341,9 +341,6 @@
           },
           "404": {
             "description": "project not found"
-          },
-          "403": {
-            "description": "forbidden"
           }
         }
       },

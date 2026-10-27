@@ -38,6 +38,18 @@ RSpec.describe 'bin/wait-dev-deploy' do
     SH
   end
 
+  # A `date +%s` that advances one second per reading, so the number of polls before a timeout does
+  # not depend on wall time.
+  let(:clock_shim) do
+    <<~'SH'
+      #!/usr/bin/env bash
+      [[ "$*" == +%s ]] || { echo "date shim: unexpected $*" >&2; exit 1; }
+      n=$(( $(cat "$SANDBOX/date.count" 2>/dev/null || echo 0) + 1 ))
+      echo "${n}" > "$SANDBOX/date.count"
+      echo "${n}"
+    SH
+  end
+
   let(:deploy_jobs) { [ 'Preflight (secrets)', 'Probe (shared VPN actions)', 'Build once (ECR)', 'Deploy (VPN + Kamal)' ] }
 
   def url(id)
@@ -95,6 +107,7 @@ RSpec.describe 'bin/wait-dev-deploy' do
   def wait(*args, files: {}, env: {})
     Dir.mktmpdir do |root|
       write_executable(File.join(root, 'gh'), gh_shim)
+      write_executable(File.join(root, 'date'), clock_shim)
       {
         'list-rails-test.yml' => ci('success'), 'list-rails-lint.yml' => ci('success'),
         'list-dev-deploy.yml' => '[]', 'head-develop' => { sha: sha }.to_json
@@ -159,6 +172,53 @@ RSpec.describe 'bin/wait-dev-deploy' do
       expect(output).to include("==> Dev Deploy deployed sha-#{sha}: #{url(12)}")
       expect(gh_log.scan('run view --job 121 --log').size).to eq(1)
       expect(gh_log).not_to include('workflow run')
+    end
+  end
+
+  context 'with a run titled only "Dev Deploy" whose Gate completed' do
+    let(:running) { deploying(12, { 'Deploy (VPN + Kamal)' => '', 'Report' => '' }, step: '', status: 'in_progress', head_sha: 'c' * 40) }
+    let(:gate_files) do
+      {
+        'list-dev-deploy.yml' => runs(row(12, title: 'Dev Deploy')),
+        'log-121' => "Gate\tDecide whether to deploy\t2026-10-20T10:31:19.2434883Z   HEAD_SHA: #{sha}\n"
+      }
+    end
+
+    it 'keeps polling the run while it is running without reading any log' do
+      files = gate_files.merge('view-12' => running)
+
+      # The clock reads 1 for the deadline (4) and 2, 3, 4 after each poll, so the third poll times out.
+      wait(sha, files: files, env: { 'WAIT_DEV_DEPLOY_TIMEOUT' => '3' }) do |output, status, gh_log|
+        expect(status.exitstatus).to eq(1), output
+        expect(output).to include('timed out', url(12), 'commit not known yet')
+        expect(gh_log.scan('run view 12 --json').size).to eq(3)
+        expect(gh_log).not_to include('--log')
+        expect(gh_log).not_to include('workflow run')
+      end
+    end
+
+    it 'reads the Gate log only once the run completed, and succeeds when it deployed' do
+      files = gate_files.merge('view-12.1' => running, 'view-12.2' => running, 'view-12' => deploying(12, head_sha: 'c' * 40))
+
+      wait(sha, files: files) do |output, status, gh_log|
+        expect(status).to be_success, output
+        expect(output).to include("==> Dev Deploy deployed sha-#{sha}: #{url(12)}")
+        expect(gh_log.scan('run view 12 --json').size).to eq(3)
+        expect(gh_log.scan('run view --job 121 --log').size).to eq(1)
+        expect(gh_log.lines.last).to include('run view --job 121 --log')
+      end
+    end
+
+    it 'fails with the failed job once the run completed with a failure' do
+      failed = deploying(12, { 'Deploy (VPN + Kamal)' => 'failure' }, step: 'failure', head_sha: 'c' * 40)
+      files = gate_files.merge('view-12.1' => running, 'view-12' => failed)
+
+      wait(sha, files: files) do |output, status, gh_log|
+        expect(status.exitstatus).to eq(1), output
+        expect(output).to include('Dev Deploy failed in Deploy (VPN + Kamal)', url(12))
+        expect(gh_log.scan('run view --job 121 --log').size).to eq(1)
+        expect(gh_log.lines.last).to include('run view --job 121 --log')
+      end
     end
   end
 
@@ -241,6 +301,19 @@ RSpec.describe 'bin/wait-dev-deploy' do
       expect(output).to match(/^warning: .*automatic trigger did not deploy/)
       expect(output).to include("==> Dev Deploy deployed sha-#{sha}: #{url(99)}")
       expect(gh_log.scan('workflow run dev-deploy.yml --ref develop -f action=deploy').size).to eq(1)
+      expect(gh_log.lines.grep(/workflow run/).size).to eq(1)
+    end
+  end
+
+  it 'dispatches only once the commit has stayed undeployed for the whole grace period' do
+    files = { 'list-dev-deploy.yml' => runs(11), 'view-11' => gate_only(11), 'dispatch' => "#{url(99)}\n", 'view-99' => deploying(99) }
+
+    # The clock reads 1 for the deadline; the first quiet poll starts the grace period at 2 and sees 3,
+    # the deadline check reads 4, and the second poll sees 5, two seconds after the grace period started.
+    wait(sha, files: files, env: { 'WAIT_DEV_DEPLOY_GRACE' => '2' }) do |output, status, gh_log|
+      expect(status).to be_success, output
+      before_dispatch = gh_log.lines.take_while { |line| !line.include?('workflow run') }
+      expect(before_dispatch.grep(/run list --workflow dev-deploy.yml/).size).to eq(2)
       expect(gh_log.lines.grep(/workflow run/).size).to eq(1)
     end
   end
