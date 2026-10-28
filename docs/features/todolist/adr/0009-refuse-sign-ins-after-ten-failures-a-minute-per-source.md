@@ -2,7 +2,7 @@
 status: Accepted
 owner: "OlegShevtsov1"
 reviewers: ["Tech Lead", "Security Lead"]
-updated_at: "2026-10-23"
+updated_at: "2026-10-28"
 feature_size: M
 stage: "07"
 ticket: "PILOT-234"
@@ -70,6 +70,10 @@ adds no dependency; the source rule keeps a caller from picking its own bucket w
   in config. Narrowing it later is a config change; the list is matched with `===`, as Rails' `RemoteIp` does, so
   addresses, ranges and patterns all work.
 - When Redis fails, the count falls back to per-process memory, like the other limits.
+- Devise's default routes (`devise_for :users`) were a third password door, `POST /users/sign_in`, that checked
+  passwords outside this limit, and an unlimited sign-up door, `POST /users` (AC-04b); they are not mounted
+  (`devise_for :users, skip: :all`), which keeps the Devise model methods the password grant uses. Only the two doors
+  above check passwords; `spec/routing/auth_routes_spec.rb` pins the authentication routes (PILOT-362).
 
 ## Links
 

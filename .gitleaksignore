@@ -1,0 +1,3 @@
+# PILOT-326: the rswag sign-up example in PR #95's commit 14d5b5d carried a random test-run token, not a real
+# credential; examples now show a fixed placeholder (spec/swagger_helper.rb). Already pushed, so not rewritten.
+14d5b5dca6f35456f672e2348972e6a45a3f51c8:swagger/v1/swagger.json:generic-api-key:1187
