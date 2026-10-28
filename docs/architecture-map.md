@@ -139,8 +139,8 @@ N/A — API-only: this repository has no frontend; the frontend is a separate re
 - `ApplicationController#authenticate_user!` is an empty override of Devise's helper
   (`app/controllers/application_controller.rb:4`); real authentication happens only in `Api::V1::BaseController`.
   A controller that does not inherit it is public.
-- `devise_for :users` mounts Devise's default routes next to the token API (`config/routes.rb:8`); which of them are
-  usable in API-only mode is UNKNOWN (no spec covers them).
+- `devise_for :users, skip: :all` (`config/routes.rb:8`) mounts no Devise routes; the Devise model helpers stay for
+  the Doorkeeper password grant, and `spec/routing/auth_routes_spec.rb` pins the authentication routes (ADR-0009).
 - A project with tasks cannot be deleted (`app/validators/project_deletion_validator.rb:3`,
   `app/models/project.rb:8`); deleting a user deletes their projects (`app/models/user.rb:9`).
 - Task status is a string enum; a value outside the enum raises `ArgumentError`, which the service turns into an

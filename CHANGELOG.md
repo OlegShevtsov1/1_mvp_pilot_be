@@ -22,6 +22,14 @@ its entry under `[Unreleased]` (checked by `changelog-check`); a release moves t
 
 ### Security
 
+## [0.3.2] - 2026-10-28
+
+### Security
+
+- Devise's default `/users/*` routes are no longer mounted: `POST /users/sign_in` checked passwords without the
+  failed sign-in limit and told a right password from a wrong one, and `POST /users` created users without the
+  sign-up limit; both now answer 404 (PILOT-362).
+
 ## [0.3.1] - 2026-10-27
 
 ### Fixed

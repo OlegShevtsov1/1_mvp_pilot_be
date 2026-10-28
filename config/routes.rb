@@ -5,7 +5,7 @@ Rails.application.routes.draw do
 
   mount Rswag::Ui::Engine => '/api-docs'
   mount Rswag::Api::Engine => '/api-docs'
-  devise_for :users
+  devise_for :users, skip: :all
   use_doorkeeper do
     skip_controllers :authorizations, :applications, :authorized_applications, :token_info
     controllers tokens: 'oauth/tokens'
