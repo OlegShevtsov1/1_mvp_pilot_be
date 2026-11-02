@@ -23,6 +23,11 @@ secrets_path: .kamal/secrets.prod
 servers:
   web:
     - <%= host %>
+  # The daily token purge (bin/purge-scheduler, sad.md §7): same image and env, no proxy, no port.
+  cron:
+    hosts:
+      - <%= host %>
+    cmd: bin/purge-scheduler
 
 ssh:
   user: ubuntu

@@ -40,16 +40,30 @@ RSpec.describe SentryTunnel do
 
   [
     'https://otherkey@errors.example.test:8443/glitchtip/2',
-    'https://fepublic@attacker.example.test:8443/glitchtip/2',
     'https://fepublic@errors.example.test:8443/glitchtip/3',
-    'http://fepublic@errors.example.test:8443/glitchtip/2',
-    'https://fepublic:secret@errors.example.test:8443/glitchtip/2',
-    'https://errors.example.test:8443/glitchtip/2'
+    'https://errors.example.test:8443/glitchtip/2',
+    'https://fepublic@attacker.example.test/3',
+    'https://otherkey@attacker.example.test/2'
   ].each do |dsn|
     it "rejects #{dsn} with 403 and forwards nothing" do
       expect { described_class.forward(envelope(dsn), allowed_dsn: allowed_dsn) }
         .to raise_error(SentryTunnel::Rejected) { |e| expect(e.status).to eq(403) }
       expect(a_request(:any, /.*/)).not_to have_been_made
+    end
+  end
+
+  [
+    'https://fepublic@attacker.example.test/2',
+    'http://fepublic@errors.example.test:8443/glitchtip/2',
+    'https://fepublic:secret@attacker.example.test/2',
+    'https://fepublic@api.example.test:9999/other/prefix/2'
+  ].each do |dsn|
+    it "forwards #{dsn} to the allowed DSN's endpoint, never to its host" do
+      stub_request(:post, upstream).to_return(status: 200)
+
+      expect(described_class.forward(envelope(dsn), allowed_dsn: allowed_dsn).first).to eq(200)
+      expect(a_request(:post, upstream)).to have_been_made.once
+      expect(a_request(:any, /attacker|api\.example\.test|:9999/)).not_to have_been_made
     end
   end
 

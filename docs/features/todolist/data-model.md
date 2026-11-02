@@ -9,7 +9,7 @@ migration_version: "7.2"
 
 Design for PRD `todolist` and SAD §4–§5 (ADR-0003 tokens, ADR-0004 Google identity, ADR-0005 legacy cutoff,
 ADR-0006 refresh rotation). Projects and tasks are unchanged: their columns, limits and statuses already match the PRD
-(`db/schema.rb:17-35`, `app/models/project.rb:2-5`, `app/models/task.rb:4`).
+(`db/schema.rb:17-35`, `app/models/project.rb:2-5`, `app/models/task.rb:2-7`).
 
 ## Conventions found
 

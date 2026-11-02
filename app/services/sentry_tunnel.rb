@@ -1,9 +1,12 @@
 require 'net/http'
 
 # Relays a browser SDK envelope to GlitchTip so ad blockers and the CSP only ever see this API.
-# The upstream URL is derived from the one allowed DSN, never from the request, so the tunnel
-# cannot be pointed at any other host. The forward authenticates with the allowed DSN's public key:
-# GlitchTip, unlike Sentry Relay, does not read the DSN from the envelope header.
+# An envelope is accepted when its DSN has the allowed DSN's public key and project id; its host,
+# scheme, port, path and secret are ignored, so the frontend can publish the DSN with its public
+# host instead of the internal one. The upstream URL is derived from the one allowed DSN, never
+# from the request, so the tunnel cannot be pointed at any other host. The forward authenticates
+# with the allowed DSN's public key: GlitchTip, unlike Sentry Relay, does not read the DSN from the
+# envelope header.
 module SentryTunnel
   MAX_BYTES = 256 * 1024
 
@@ -21,7 +24,7 @@ module SentryTunnel
   # Returns [upstream status, upstream body].
   def forward(body, allowed_dsn:)
     allowed = Sentry::DSN.new(allowed_dsn)
-    raise Rejected.new(403, 'dsn not allowed') unless same_dsn?(envelope_dsn(body), allowed)
+    raise Rejected.new(403, 'dsn not allowed') unless allowed_dsn?(envelope_dsn(body), allowed)
 
     response = Net::HTTP.start(allowed.host, allowed.port, use_ssl: allowed.scheme == 'https',
                                open_timeout: 2, read_timeout: 5) do |http|
@@ -47,8 +50,8 @@ module SentryTunnel
     raise Rejected.new(400, 'malformed envelope')
   end
 
-  def same_dsn?(given, allowed)
-    %i[scheme public_key secret_key host port path project_id].all? do |part|
+  def allowed_dsn?(given, allowed)
+    %i[public_key project_id].all? do |part|
       given.public_send(part) == allowed.public_send(part)
     end
   end

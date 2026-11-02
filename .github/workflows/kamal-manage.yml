@@ -4,6 +4,10 @@ run-name: Kamal Manage ${{ inputs.action }}
 
 # Operates the prod deployment through the shared mvp VPN: status, logs, restart, rollback
 # (deploy/rollback.sh prod, which also moves the ECR tags prod-current/prod-previous) and remove.
+# target=srv operates prod on the on-prem srv host instead (deploy/rollback.sh prod-srv and the
+# prod-srv-* tags); remove is refused there, because it would also remove the shared kamal-proxy.
+# The guard reads the live prod host from public DNS (deploy/prod_active_target.sh): after a Prod
+# Switch to srv a rollback there also moves prod-current/prod-previous.
 # See README "Prod deploy".
 #
 # Dual control: runs only from main; restart needs confirm=prod, rollback the typed
@@ -18,6 +22,12 @@ on:
         required: true
         type: choice
         options: [status, logs, restart, rollback, remove]
+      target:
+        description: Prod host - aws (the AWS instance) or srv (the on-prem srv host); Prod Switch decides which one is live
+        required: true
+        type: choice
+        options: [aws, srv]
+        default: aws
       version:
         description: Rollback target (40-hex git sha, optionally sha-<sha>); empty rolls back to the version before the current one
         required: false
@@ -46,6 +56,8 @@ jobs:
     runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
     outputs:
       version: ${{ steps.inputs.outputs.version }}
+      destination: ${{ steps.inputs.outputs.destination }}
+      active_target: ${{ steps.active.outputs.active_target }}
     steps:
       - uses: actions/checkout@v4
 
@@ -56,7 +68,13 @@ jobs:
           ACTION: ${{ inputs.action }}
           CONFIRM: ${{ inputs.confirm }}
           VERSION: ${{ inputs.version }}
+          TARGET: ${{ inputs.target }}
         run: deploy/prod_guard.sh manage >> "${GITHUB_OUTPUT}"
+
+      # Before any VPN: vpn-up resolves the VPN zones through the VPN's own DNS.
+      - name: Find the live prod host (public DNS)
+        id: active
+        run: deploy/prod_active_target.sh >> "${GITHUB_OUTPUT}"
 
   # Only names are checked and printed, never values.
   preflight:
@@ -73,6 +91,9 @@ jobs:
           VPN_CI_OVPN: ${{ secrets.VPN_CI_OVPN }}
           PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
           PROD_VPN_IP: ${{ secrets.PROD_VPN_IP }}
+          PROD_SRV_SSH_KEY: ${{ secrets.PROD_SRV_SSH_KEY }}
+          PROD_SRV_VPN_IP: ${{ secrets.PROD_SRV_VPN_IP }}
+          DESTINATION: ${{ needs.guard.outputs.destination }}
           INFRA_READ_TOKEN: ${{ secrets.INFRA_READ_TOKEN }}
           SECRET_KEY_BASE: ${{ secrets.SECRET_KEY_BASE }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
@@ -87,8 +108,10 @@ jobs:
           # PROJECT_NAME comes from config/project.env and KAMAL_REGISTRY_PASSWORD from the ECR
           # login inside deploy.sh; every other variable .kamal/secrets.prod reads is a secret.
           mapfile -t kamal_secrets < <(secret_names .kamal/secrets.prod | grep -vxE 'PROJECT_NAME|KAMAL_REGISTRY_PASSWORD')
+          host_secrets=(PROD_SSH_KEY PROD_VPN_IP)
+          if [[ "${DESTINATION}" == 'prod-srv' ]]; then host_secrets=(PROD_SRV_SSH_KEY PROD_SRV_VPN_IP); fi
           required=(
-            AWS_ROLE_ARN VPN_CI_OVPN PROD_SSH_KEY PROD_VPN_IP INFRA_READ_TOKEN
+            AWS_ROLE_ARN VPN_CI_OVPN "${host_secrets[@]}" INFRA_READ_TOKEN
             "${kamal_secrets[@]}"
             TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID TELEGRAM_PILOT_PROD_ALERTS_THREAD_ID
           )
@@ -172,6 +195,8 @@ jobs:
     permissions:
       id-token: write
       contents: read
+    env:
+      DESTINATION: ${{ needs.guard.outputs.destination }}
     steps:
       - uses: actions/checkout@v4
 
@@ -213,9 +238,12 @@ jobs:
       - name: Load the prod SSH key into an agent (never written to disk)
         env:
           PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+          PROD_SRV_SSH_KEY: ${{ secrets.PROD_SRV_SSH_KEY }}
         run: |
+          key="${PROD_SSH_KEY}"
+          if [[ "${DESTINATION}" == 'prod-srv' ]]; then key="${PROD_SRV_SSH_KEY}"; fi
           eval "$(ssh-agent -a "${RUNNER_TEMP}/ssh-agent.sock")" > /dev/null
-          ssh-add - <<< "${PROD_SSH_KEY}"
+          ssh-add - <<< "${key}"
           echo "SSH_AUTH_SOCK=${SSH_AUTH_SOCK}" >> "${GITHUB_ENV}"
 
       - name: VPN up
@@ -229,9 +257,12 @@ jobs:
       - name: Check that prod is reachable over the VPN
         env:
           PROD_VPN_IP: ${{ secrets.PROD_VPN_IP }}
+          PROD_SRV_VPN_IP: ${{ secrets.PROD_SRV_VPN_IP }}
         run: |
+          host="${PROD_VPN_IP}"
+          if [[ "${DESTINATION}" == 'prod-srv' ]]; then host="${PROD_SRV_VPN_IP}"; fi
           for attempt in 1 2 3; do
-            if nc -z -w 5 "${PROD_VPN_IP}" 22; then
+            if nc -z -w 5 "${host}" 22; then
               echo "prod SSH is reachable over the VPN"
               exit 0
             fi
@@ -248,6 +279,7 @@ jobs:
           CONFIRM: ${{ inputs.confirm }}
           BACKUP_GATE: ${{ needs.backup-gate.outputs.passed }}
           PROD_VPN_IP: ${{ secrets.PROD_VPN_IP }}
+          PROD_SRV_VPN_IP: ${{ secrets.PROD_SRV_VPN_IP }}
           SECRET_KEY_BASE: ${{ secrets.SECRET_KEY_BASE }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
@@ -255,11 +287,12 @@ jobs:
           SMOKE_TOKEN: ${{ secrets.SMOKE_TOKEN }}
           GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
           OAUTH_CLIENT_ID: ${{ vars.OAUTH_CLIENT_ID }}
+          PROD_ACTIVE_TARGET: ${{ needs.guard.outputs.active_target }}
         run: |
           if [[ "${ACTION}" == 'rollback' ]]; then
-            deploy/rollback.sh prod "${VERSION}"
+            deploy/rollback.sh "${DESTINATION}" "${VERSION}"
           else
-            deploy/manage.sh "${ACTION}"
+            deploy/manage.sh "${ACTION}" "${DESTINATION}"
           fi
 
       - name: VPN down
@@ -278,6 +311,7 @@ jobs:
         id: summarize
         env:
           ACTION: ${{ inputs.action }}
+          WHERE: ${{ needs.guard.outputs.destination || 'prod' }}
           GUARD: ${{ needs.guard.result }}
           PREFLIGHT: ${{ needs.preflight.result }}
           PROBE: ${{ needs.probe.result }}
@@ -311,10 +345,10 @@ jobs:
             fi
           done
           if [[ -n "${failed}" ]]; then
-            message="❌ Kamal Manage prod ${ACTION} failed in ${failed}: $(explain "${failed}") ${RUN_URL}"
+            message="❌ Kamal Manage ${WHERE} ${ACTION} failed in ${failed}: $(explain "${failed}") ${RUN_URL}"
             echo "::error::${failed} failed: $(explain "${failed}")"
           else
-            message="✅ Kamal Manage prod ${ACTION} succeeded ${RUN_URL}"
+            message="✅ Kamal Manage ${WHERE} ${ACTION} succeeded ${RUN_URL}"
           fi
           echo "message=${message}" >> "${GITHUB_OUTPUT}"
           echo "FAILED_JOB=${failed}" >> "${GITHUB_ENV}"

@@ -1,6 +1,6 @@
 ---
 status: Living
-updated_at: "2026-10-22"
+updated_at: "2026-10-28"
 ---
 
 # Domain Context — 1_mvp_pilot_be
@@ -10,6 +10,9 @@ updated_at: "2026-10-22"
 - access token — the secret a user's device receives at sign-in and presents on every request to prove who they
   are; it can be revoked on its own. NOT the legacy access token: one access token belongs to one sign-in, not to
   the account.
+- cabinet — the part of the app a user sees after signing in, where they work with their own projects and their
+  tasks. NOT an account or profile settings area: the cabinet holds only projects and tasks; there is no screen for
+  changing email, password or profile.
 - error report — an error that happened in the frontend and is forwarded through this system to error tracking.
   NOT an error of this system itself: those are reported directly, without the forwarding step.
 - Google sign-in — signing in by proving ownership of a Google account whose email becomes the user's email; if a

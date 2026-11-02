@@ -21,7 +21,8 @@ reflects_commit: "144e68b"
   `app/models/user.rb:7`); CanCanCan (`app/models/ability.rb:1`); active_model_serializers 0.10
   (`app/serializers/base_serializer.rb:1`); rswag (`spec/swagger_helper.rb:4`, contract
   `swagger/v1/swagger.json`); Sentry SDK reporting to GlitchTip (`config/initializers/sentry.rb:3`); rack-cors
-  (`config/initializers/cors.rb`); Kamal 2 deploys (`config/deploy.dev.yml`, `config/deploy.yml`).
+  (`config/initializers/cors.rb`); Kamal 2 deploys (`config/deploy.dev.yml`, `config/deploy.yml`,
+  `config/deploy.prod-srv.yml`).
 - Build / test / lint: `bundle exec rspec`, `bundle exec rubocop --parallel`, `bundle exec brakeman --no-pager -q`
   (each the exact `run:` of a CI step in `.github/workflows/rails-test.yml` / `rails-lint.yml`); also
   `bundle exec fasterer`, `bundle exec bundler-audit check --update`, gitleaks and actionlint in CI. No build step
@@ -53,10 +54,10 @@ C4Container
 | tasks | `app/controllers/api/v1/tasks_controller.rb`, `app/services/tasks/` | controller → service → model → serializer | `config/routes.rb:16` | CRUD of the tasks of one of the user's projects, cached list. |
 | api/v1 | `app/controllers/api/v1/base_controller.rb`, `app/controllers/concerns/`, `app/exceptions/api_exceptions.rb`, `app/models/ability.rb`, `app/serializers/`, `app/services/application_service.rb`, `app/services/base_application/authenticate.rb`, `app/services/auth/legacy_usage.rb` | shared | `config/routes.rb:10` | Token authentication before every action, authorization, exception rendering, serializers and the service base class. |
 | health | `app/controllers/health_controller.rb` | controller | `config/routes.rb:2` | `GET /health`: `status` and the `release` baked into the image (`APP_RELEASE`). |
-| errors tunnel | `app/controllers/errors_controller.rb`, `app/services/sentry_tunnel.rb` | controller → service | `config/routes.rb:3` | `POST /api/errors`: relays the frontend's Sentry envelopes to GlitchTip, only for the allowed DSN, size and rate limited. |
+| errors tunnel | `app/controllers/errors_controller.rb`, `app/services/sentry_tunnel.rb` | controller → service | `config/routes.rb:3` | `POST /api/errors`: relays the frontend's Sentry envelopes to GlitchTip, only for the allowed DSN's public key and project id (any host), always to the allowed DSN's GlitchTip, size and rate limited. |
 | admin GlitchTip smoke | `app/controllers/admin/glitchtip_smoke_controller.rb`, `app/services/glitchtip_smoke.rb`, `lib/tasks/glitchtip.rake` | controller → service | `config/routes.rb:4` | Deliberate errors behind `SMOKE_TOKEN` that prove a deployment reports to GlitchTip; every refusal is a 404. |
 | API docs | `swagger/v1/swagger.json`, `spec/swagger_helper.rb` | generated contract | `config/routes.rb:6`, `config/routes.rb:7` | rswag UI and the JSON contract at `/api-docs`. |
-| deploy and CI tooling | `deploy/`, `bin/`, `.github/workflows/`, `.kamal/`, `config/deploy*.yml`, `config/project.env` | shell + workflows | `.github/workflows/dev-deploy.yml:11` | Dev Deploy (build once to ECR, Kamal over the VPN), prod promote and deploy, Kamal manage, CI, TDD check, main-guard, `bin/wait-dev-deploy`. |
+| deploy and CI tooling | `deploy/`, `bin/`, `.github/workflows/`, `.kamal/`, `config/deploy*.yml`, `config/project.env` | shell + workflows | `.github/workflows/dev-deploy.yml:11` | Dev Deploy (build once to ECR, Kamal over the VPN), prod promote and deploy, Kamal manage, Prod Switch (aws <-> srv), CI, TDD check, main-guard, `bin/wait-dev-deploy`. |
 
 ## Conventions (cited — the rules a new feature must match)
 
@@ -134,7 +135,7 @@ N/A — API-only: this repository has no frontend; the frontend is a separate re
 ## Constraints & known tech-debt
 
 - `TASK_DEFINITION.md` (the original assignment) names fields and statuses that differ from the code: `title`
-  vs `name`, and `new` vs the code's `not_started` / `in_progress` / `completed` (`app/models/task.rb:4`). The code
+  vs `name`, and `new` vs the code's `not_started` / `in_progress` / `completed` (`app/models/task.rb:2`). The code
   and `swagger/v1/swagger.json` are authoritative.
 - `ApplicationController#authenticate_user!` is an empty override of Devise's helper
   (`app/controllers/application_controller.rb:4`); real authentication happens only in `Api::V1::BaseController`.
@@ -143,14 +144,15 @@ N/A — API-only: this repository has no frontend; the frontend is a separate re
   the Doorkeeper password grant, and `spec/routing/auth_routes_spec.rb` pins the authentication routes (ADR-0009).
 - A project with tasks cannot be deleted (`app/validators/project_deletion_validator.rb:3`,
   `app/models/project.rb:8`); deleting a user deletes their projects (`app/models/user.rb:9`).
-- Task status is a string enum; a value outside the enum raises `ArgumentError`, which the service turns into an
-  error (`app/services/tasks/create.rb:21`).
+- Task status is a string enum validated by the model (`app/models/task.rb:6`); a value outside `Task::STATUSES`
+  fails validation and the API answers 422 naming the allowed statuses.
 - Dev Deploy runs on `workflow_run` of Rails Tests and Rails CI (`.github/workflows/dev-deploy.yml:12`) for
   `develop` and `hotfix/*` only (GitHub sometimes creates only one of the two runs, so such a push is not always
   deployed). A merge into `main` is never deployed automatically: `bin/wait-dev-deploy` always dispatches Dev
   Deploy once for it.
-- The kamal-proxy on the dev host is shared with another deployment: never `kamal remove` or `kamal proxy *` with
-  `config/deploy.dev.yml` (`config/deploy.dev.yml:8`). Kamal versions are `sha-<sha>` on dev and `prod-sha-<sha>` on
+- The kamal-proxy on the dev host is shared with another deployment (and with prod when `target=srv`): never
+  `kamal remove` or `kamal proxy *` with `config/deploy.dev.yml` (`config/deploy.dev.yml:8`) or
+  `config/deploy.prod-srv.yml` (`config/deploy.prod-srv.yml:11`). Kamal versions are `sha-<sha>` on dev and `prod-sha-<sha>` on
   prod, while Kamal's default version is the bare git sha: a manual `kamal app start` needs `--version`.
 - Public repository: no internal hostnames, IP addresses or account ids anywhere; the project name and zone come
   from `config/project.env`.

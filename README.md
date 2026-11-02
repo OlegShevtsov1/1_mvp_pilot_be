@@ -164,17 +164,20 @@ bin/wait-dev-deploy --rollback       # dispatches action=rollback and waits for 
 ```
 
 It waits for the Dev Deploy run that deploys the commit and exits 0 when its `Deploy or roll back`
-step succeeded, 1 when that run failed, a later Dev Deploy run deployed a commit that contains it
-(superseded), Rails Tests or Rails CI failed, or it timed out, and 2 on a malformed sha. GitHub
+step succeeded, or a later Dev Deploy run deployed a commit that contains it; it does not wait for
+Report and Notify. It exits 1 when a run of the commit failed, Rails Tests or Rails CI failed, or it
+timed out, and 2 on a malformed sha. GitHub
 reports every `workflow_run` run on `main`, so the script finds the run by its title
 `Dev Deploy sha-<sha>` (or, for older runs titled just `Dev Deploy`, by the `HEAD_SHA` in their Gate
 log once the run completed); a run of the commit that did not deploy it is not the one it waits for.
 GitHub does not always create the second `workflow_run` run, so when both CI runs are green and no
 run for the commit is deploying, it dispatches Dev Deploy once on the commit's own branch (`develop`, `hotfix/*` or
 `main`, only while that branch is still the commit), prints a `warning:` line and waits for that
-run instead. `WAIT_DEV_DEPLOY_TIMEOUT` (seconds, default 1200),
-`WAIT_DEV_DEPLOY_INTERVAL` (15) and `WAIT_DEV_DEPLOY_GRACE` (120, how long to wait for the automatic
-trigger) tune it.
+run instead. `WAIT_DEV_DEPLOY_TIMEOUT` (seconds, default 1440, under the factory's 1500 s limit on its
+deploy command),
+`WAIT_DEV_DEPLOY_INTERVAL` (15), `WAIT_DEV_DEPLOY_GRACE` (120, how long to wait for the automatic
+trigger) and `WAIT_DEV_DEPLOY_RETRY_SECONDS` (5, backoff base of the 3 tries of a read after a GitHub 5xx or
+network error; the dispatch is never retried) tune it.
 
 From a console on the VPN, with the secrets below exported, AWS credentials that can pull from
 ECR and an SSH key accepted by the dev host:
@@ -184,8 +187,12 @@ DEV_HOST=<dev host VPN address> deploy/deploy.sh dev sha-<sha>   # SKIP_SMOKE=1 
 DEV_HOST=<dev host VPN address> deploy/rollback.sh dev [sha-<sha>]
 ```
 
-**Never run `kamal remove` or `kamal proxy reboot|remove` with `config/deploy.dev.yml`:** the
-kamal-proxy on the dev host is shared with another deployment. Always pass the config with `-c`.
+A rollback to a version from before the `cron` role (T13) boots only the `web` role, because that version has no
+cron container and Kamal refuses a rollback otherwise; the newer cron container keeps running until the next deploy.
+
+**Never run `kamal remove` or `kamal proxy reboot|remove` with `config/deploy.dev.yml` or
+`config/deploy.prod-srv.yml`:** the kamal-proxy on the dev host is shared with another deployment. Always pass the
+config with `-c`.
 
 Secrets (names only):
 
@@ -215,9 +222,11 @@ private infrastructure repository.
 Errors go to GlitchTip through the Sentry SDK (`SENTRY_DSN`; nothing is sent without it), tagged
 with `SENTRY_ENVIRONMENT` and the release; request data is scrubbed with `filter_parameters`.
 
-- `POST /api/errors` – tunnel for the frontend's browser SDK. Only envelopes for
-  `SENTRY_ALLOWED_FE_DSN` are relayed (to that DSN's GlitchTip envelope endpoint, authenticated with
-  the DSN's public key in `X-Sentry-Auth`, never to a host from the request),
+- `POST /api/errors` – tunnel for the frontend's browser SDK. An envelope is relayed when its DSN has
+  the public key and project id of `SENTRY_ALLOWED_FE_DSN`, whatever its host, so the frontend may
+  publish the DSN with its public host instead of the internal one; the full DSN still works. It is
+  always relayed to that DSN's GlitchTip envelope endpoint, authenticated with the DSN's public key in
+  `X-Sentry-Auth`, never to a host from the request,
   up to 256 KiB; 404 while `SENTRY_ALLOWED_FE_DSN` is unset. Each client IP gets 30 requests a
   minute, counting every request including refused ones, then 429; the count is also kept in process
   memory, so it holds while Redis is unavailable or comes back mid-minute.
@@ -230,7 +239,12 @@ with `SENTRY_ENVIRONMENT` and the release; request data is scrubbed with `filter
 
 `bin/swagger_smoke BASE_URL` smoke-tests any running instance against every operation documented
 in `swagger/v1/swagger.json`. With `SMOKE_READ_ONLY=1` it only sends GET requests and creates
-nothing (prod uses this):
+nothing (prod uses this). The token, sign-out and revoke checks need `OAUTH_CLIENT_ID` and are skipped
+without it; with it, the authenticated checks use the sign-up access token as a bearer token, otherwise the
+legacy headers, which `X-Smoke-Token` marks only when `SMOKE_TOKEN` is set (unmarked, the server counts them as
+legacy uses). A separate legacy pass, every request marked so the server never counts it, runs while
+`LEGACY_AUTH_ENABLED` is not off and `SMOKE_TOKEN` is set. The documented 429 answers and the legacy sign-in's 401,
+which would count as a failed sign-in, are never provoked:
 
 ```
 bin/swagger_smoke http://localhost:3000
@@ -251,7 +265,8 @@ image `sha-<sha>` that Dev Deploy built as `prod-sha-<sha>`, changing only its `
 promotion fails if the layers or the config differ in any other way. After `/health` reports the
 new release and the read-only smoke passes, the ECR tag `prod-current` points at the live image and
 the one it replaced becomes `prod-previous`. A rollback moves the tags the same way, so
-`prod-current` is always what is running.
+`prod-current` is always what is running on the live prod host (the AWS host until a Prod Switch
+moves prod to the srv host; see "Prod Switch (aws <-> srv)").
 
 Deploy a release: an annotated tag `vX.Y.Z` on `main` whose commit Dev Deploy has already
 deployed and smoke-tested (see "Releases and hotfixes"); a bare sha is refused:
@@ -322,6 +337,186 @@ Pending:
 
 The prod host, VPN and DNS are managed in the private infrastructure repository.
 
+### Prod on the on-prem srv host (`target=srv`)
+
+To save cost, `Kamal Deploy` and `Kamal Manage` can send prod to the on-prem server that already
+runs dev (the srv host) instead of the AWS instance. The input `target` is `aws` by default, which
+behaves exactly as described above; `target=srv` deploys and operates the same release under the
+same dual control (`main` only, environment `prod`, `confirm=prod`, an annotated release tag).
+
+- Config: `config/deploy.prod-srv.yml`, a self-contained copy of `config/deploy.yml` that differs
+  only in the host (`PROD_SRV_VPN_IP`), the SSH user (`<PROJECT_NAME>-prod`) and the proxy. The
+  service stays `<PROJECT_NAME>`, so it runs the same promoted `prod-sha-<sha>` image, and its
+  containers, accessories and volumes (`<PROJECT_NAME>-web`, `-cron`, `-db`, `-redis`, `-pg-data`,
+  `-redis-data`) sit beside dev (`<PROJECT_NAME>-dev-*`) and the other deployment on the host's
+  shared kamal-proxy. That proxy routes only the host `<PROJECT_ZONE>` to it; TLS is terminated by
+  the public TLS terminator in front of the proxy, as for dev (`forward_headers: true`).
+- Data: srv gets fresh `db` and `redis` accessories and starts empty. Prod Switch moves the data
+  (dump and restore) at the cut-over.
+- ECR tags: srv moves its own `prod-srv-current` / `prod-srv-previous`; `prod-current` /
+  `prod-previous` always name the live prod host, so a srv deploy or rollback also moves them while
+  srv is live, and an aws one moves `prod-aws-current` / `prod-aws-previous` instead while it is not.
+  The live host is read from public DNS (`deploy/prod_active_target.sh`, env `PROD_ACTIVE_TARGET`).
+- An aws deploy while srv is live checks `/health` inside the web container (its kamal-proxy cannot
+  renew the certificate while DNS points elsewhere), skips the smoke and `release-watch`.
+- Checks: the health check, the read-only smoke and `release-watch` go over the VPN straight to the
+  srv host's proxy with the prod Host header, never through public DNS, wherever it points.
+  So a srv `release-watch` holds the shared VPN lock for its whole watch, which is therefore 3
+  minutes (6 checks) instead of 10: every other job's `vpn-up` waits for the lock only 300 s and
+  then fails, so a Dev Deploy or Kamal Manage run must not wait behind a longer watch.
+- `remove` is refused on srv (`deploy/prod_guard.sh` and `deploy/manage.sh`): `kamal remove` would
+  also remove the kamal-proxy shared with dev and the other deployment.
+- `restart` on srv boots the running version by name (`kamal app boot --version`), never `latest`: the image tag
+  `latest` on the srv host is shared with dev, whose deploys move it to develop code.
+
+```
+gh workflow run "Kamal Deploy" --ref main -f environment=prod -f target=srv -f version=vX.Y.Z -f confirm=prod
+gh workflow run "Kamal Manage" --ref main -f action=status -f target=srv
+gh workflow run "Kamal Manage" --ref main -f action=rollback -f target=srv -f confirm=ROLLBACK-prod
+```
+
+From a console on the VPN, as above but with the srv address and the srv SSH key:
+
+```
+PROD_SRV_VPN_IP=<srv VPN address> deploy/deploy.sh prod-srv vX.Y.Z
+CONFIRM=ROLLBACK-prod PROD_SRV_VPN_IP=<srv VPN address> deploy/rollback.sh prod-srv [sha-<sha>]
+PROD_SRV_VPN_IP=<srv VPN address> deploy/manage.sh status|logs|restart prod-srv
+```
+
+Secrets (names only): environment `prod` (here and on the public mirror) gains `PROD_SRV_VPN_IP`
+and `PROD_SRV_SSH_KEY`, needed only for `target=srv`; every app secret is shared with aws.
+
+Pending before the first srv deploy (operator):
+
+- The srv user `<PROJECT_NAME>-prod` with its own key and Docker access (infra card), and the two
+  secrets above.
+- The public TLS terminator's route and certificate for `<PROJECT_ZONE>` to the srv proxy (infra
+  card); it must set `X-Forwarded-For`, which the sign-in limits rely on.
+- A check that no `<PROJECT_NAME>-web|cron|db|redis` container or `<PROJECT_NAME>-pg-data` /
+  `-redis-data` volume already exists on the srv host.
+- DNS for `<PROJECT_ZONE>` stays on AWS until the cut-over, which Prod Switch moves only with the
+  operator's explicit OK (below).
+
+### Prod Switch (aws <-> srv)
+
+`Prod Switch` (`.github/workflows/prod-switch.yml`, every step a subcommand of
+`deploy/prod_switch.sh`) moves prod between the AWS instance and the srv host, in either direction
+and as often as needed: `to=srv` and back with `to=aws`. It runs only from `main`, in environment
+`prod`, with `confirm=prod` and the release tag the live prod runs; it refuses a switch to the host
+that is already live. The live host is whatever public DNS for `<PROJECT_ZONE>` points at: srv when
+`<PROJECT_ZONE>` and `app.<PROJECT_ZONE>` resolve to the address of `dev.<PROJECT_ZONE>` (the public
+TLS terminator in front of the srv host), aws when both resolve elsewhere. Only the infra prod stack
+writes those records; nothing in this repository stores the live host.
+
+```
+gh workflow run "Prod Switch" --ref main -f to=srv -f version=vX.Y.Z -f confirm=prod                  # dry run
+gh workflow run "Prod Switch" --ref main -f to=srv -f version=vX.Y.Z -f confirm=prod -f dry_run=false
+gh workflow run "Prod Switch" --ref main -f to=aws -f version=vX.Y.Z -f confirm=prod -f dry_run=false # back
+```
+
+On the mirror add `-f source_sha=<primary sha>`, as for Kamal Deploy. `dry_run` is `true` by default:
+the guards run, every other command that would touch a host, ECR, DNS or infra is printed as
+`[dry-run] ...` and none runs.
+
+1. `prepare`, `standby`, `target`, nothing touched: `prepare` checks the target over the VPN and
+   resumes a service an earlier switch paused there. It refuses when the srv host is not reachable,
+   when fe's containers do not run on the target, or when the live prod runs another version. For
+   `to=aws` while the AWS instance does not answer (stopped, or deleted by a separate decision), it
+   asks for the standby: Telegram asks for the `prod-dns` approval, and `standby`, in environment
+   `prod-dns`, dispatches `Project Terraform Prod` with `prod_target=aws-standby` (the AWS instance
+   running, re-created if absent; the records stay on srv, DNS does not move), the same way and with
+   the same fallback as the DNS step (3.). `target` then waits up to 20 minutes for SSH on the AWS
+   instance and checks it again (fe must run there too). That wait holds the shared VPN lock, so Dev
+   Deploys started meanwhile fail fast. When the instance does not come up in time, nothing touched
+   prod: run Prod Switch again once it answers, and the standby is skipped. Expect about an hour for a
+   deleted instance (infra apply, bootstrap, fe and be deploys) and minutes for a stopped one. When
+   the target does not run the release, `target` dispatches Kamal Deploy `target=<to>` with the
+   release and `prod_switch_run=<this run>` and watches the whole run, off the VPN (that run needs
+   the VPN lock itself); a fresh host gets its accessories through `kamal setup` there. Prod Switch
+   holds `kamal-prod`, so that deploy runs in `kamal-prod-switch` instead, and its guard refuses
+   unless the run is this in-progress Prod Switch on `main` (its title `Prod Switch to <to>`, so not
+   a dry run) and `<to>` is not the live host.
+2. `data`: the target must run the release. The live prod goes into Kamal maintenance (kamal-proxy answers 503 for `<PROJECT_NAME>` only,
+   nothing else on a shared proxy) and its app containers stop (`docker stop`, not `kamal app stop`,
+   which would also remove the service from kamal-proxy and end the 503). A final `pg_dump` of
+   `<PROJECT_NAME>_prod` goes over SSH through the runner (owner-only temp file, never uploaded,
+   deleted at exit) into the target's recreated database (`dropdb --force`, `createdb`, `pg_restore`),
+   and the exact row counts of every table in `public` must match on both sides. Then the target's
+   app boots on the release. Telegram asks for the `prod-dns` approval (GitHub notifies the reviewers
+   too, and a failed message does not fail the job); prod stays in maintenance until DNS moves, so
+   approve promptly.
+3. `prod-dns`: in the GitHub environment `prod-dns`, whose required reviewer is the operator. With
+   `INFRA_PROD_DISPATCH_TOKEN` it dispatches `Project Terraform Prod` in
+   `${INFRA_PROD_REPO:-<owner>/1_mvp_infra}@env/prod` with `project=<PROJECT_NAME>`, `action=apply`,
+   `confirm=APPLY-PROD-<PROJECT_NAME>` and `prod_target=<to>`, and watches it. Without the token, or
+   when the dispatch or the run fails, it prints that command and the record changes
+   (`<PROJECT_ZONE>` and `app.<PROJECT_ZONE>` A records), to be applied through infra, never in the
+   Route53 console. Either way it waits for public DNS to show the target (20 minutes after a
+   successful apply, 60 for the operator).
+4. `finalize`: `/health` must report the release on `https://<PROJECT_ZONE>`, the read-only smoke must
+   pass and `https://app.<PROJECT_ZONE>/config.js` must set `API_URL` to `https://<PROJECT_ZONE>` and
+   `ENV_NAME` to `prod`, each pinned to the address DNS now gives. Then `prod-previous` takes the old
+   `prod-current` and `prod-current` the release (a no-op when it already is that image).
+5. `finalize`: the old host's app containers stop, as in the freeze. Containers, accessories and
+   volumes stay, and its service stays registered and in maintenance, so a switch back resumes it.
+   The AWS instance itself is stopped or deleted only through infra, never by this workflow: after
+   `to=srv`, infra's `prod_target=srv` has already stopped it, so an AWS host that no longer answers
+   needs nothing stopped (the freeze stopped its app). An srv host that does not answer fails the job.
+
+Rollback: a failure or cancellation in `data` after the freeze has started, or a refused or missing
+`prod-dns` approval, runs abort: the live prod's app starts on the release (`kamal app start
+--version`), maintenance ends and `/health` must answer. DNS was not touched. Before that, the abort
+job checks the facts (`deploy/prod_switch.sh abort-check`): public DNS must still show the source,
+and this run's `Switch DNS (operator approval)` job must never have begun (no runner, no step, in
+the jobs API; a job cancelled while waiting for its approval has `started_at` set but neither). When
+that check refuses, or the jobs API cannot be read, nothing is brought back and prod stays in
+maintenance: go on as after DNS (below). When the abort itself fails, the report and the Telegram
+message say prod may still be in maintenance: run
+`PROD_ACTIVE_TARGET=<from> deploy/prod_switch.sh abort <from destination> sha-<sha>` from a
+console. Once `prod-dns` has started (its output `touched=true`) nothing is undone automatically,
+because DNS may have moved.
+After DNS, from a console on the VPN with the deploy environment and both SSH keys:
+
+- finish: once public DNS shows the target (re-run the infra apply if needed),
+  `PROD_ACTIVE_TARGET=<to> deploy/prod_switch.sh finalize-public <to destination> sha-<sha>` and
+  `deploy/prod_switch.sh stop-old <from destination>`;
+- or go back: switch DNS back through infra (`prod_target=<from>`), then
+  `PROD_ACTIVE_TARGET=<from> deploy/prod_switch.sh abort <from destination> sha-<sha>`.
+
+Destinations are `prod` (aws) and `prod-srv` (srv). What is not moved: Redis (cache, rate-limit
+counters, sessions; tokens live in Postgres), so a few counters start fresh. The downtime is the
+data move, the approval wait, the infra apply and the DNS TTL (300 s).
+
+Prerequisites (operator): fe deployed to the target first with fe's Kamal Deploy `target=<to>` (same
+version and confirm; fe's own switch stops the old fe containers); the secrets of both hosts in
+environment `prod` (`PROD_SSH_KEY`, `PROD_VPN_IP`, `PROD_SRV_SSH_KEY`, `PROD_SRV_VPN_IP`); the
+environment `prod-dns` with the operator as required reviewer and the secret
+`INFRA_PROD_DISPATCH_TOKEN` (fine-grained on the infra repository: actions read and write, and
+contents read so the job can check the `prod_target` options; optional, without it the operator
+applies by hand); the variable `INFRA_PROD_REPO` when the infra repository is not
+`<owner>/1_mvp_infra`; the `prod_target` input of `Project Terraform Prod`, which must persist the
+target so a later apply does not revert DNS.
+
+Before each dispatch the job reads `Project Terraform Prod` from `env/prod` (`gh workflow view
+--yaml`) and dispatches only a `prod_target` value it offers. A missing value (`aws-standby` until
+the infra card that adds it lands on `env/prod`) gets a warning naming it and the print-and-wait
+fallback, with nothing dispatched; an unreadable workflow is dispatched unchecked, and GitHub's
+refusal of an unknown input falls back the same way. Until infra offers `aws-standby`, the operator
+applies the printed standby by hand within the 20-minute wait, or applies it first and runs Prod
+Switch again.
+
+SSH host keys: Prod Switch connects with `StrictHostKeyChecking=accept-new`, the same trust Kamal's
+own SSH gives these hosts on a fresh runner, and only over the authenticated mvp VPN. A pinned key
+would refuse an AWS instance infra re-created with a new one.
+
+Operator checks before the first real switch: `prod-dns` has the operator as required reviewer;
+`INFRA_PROD_DISPATCH_TOKEN` and `INFRA_PROD_REPO` as above; infra `prod_target=aws-standby` on
+`env/prod` for the standby path; then a `dry_run=true` run in each direction.
+
+The whole run holds the `kamal-prod` concurrency group, so no deploy, rollback or restart starts
+while prod is frozen. `prepare`, `target` (after a standby), `data`, `abort` and `finalize` hold the
+shared VPN lock, so a Dev Deploy started meanwhile may need a re-run.
+
 ## Releases and hotfixes
 
 **Versions.** Releases are annotated git tags `vX.Y.Z` ([Semantic Versioning](https://semver.org)).
@@ -351,9 +546,10 @@ refactor and test need no entry. `scripts/release-notes.sh vX.Y.Z` prints a vers
    `## [X.Y.Z] - YYYY-MM-DD` (X.Y.Z from `scripts/next-version.sh origin/develop`) and keep
    `[Unreleased]` with its six empty categories. Its squash commit `<D>` is deployed to dev by Dev
    Deploy.
-2. Release PR `develop` → `main`, titled `PILOT-<n>: Release vX.Y.Z` (`Type: chore`), merged by the
-   operator by hand with a merge commit (decision 27); `TDD check` skips it, `changelog-check` passes
-   it. Its body carries the version's changelog (decision 64): a `## Changelog` heading followed by
+2. Release PR `develop` → `main`, titled `PILOT-<n>: Release vX.Y.Z` (the release's own card, never
+   `PILOT-0`; `pr-conventions-check` condition 5 fails a `PILOT-0: Release …` title, also on the
+   release-prep PR) (`Type: chore`), merged by the operator by hand with a merge commit (decision 27);
+   `TDD check` skips it, `changelog-check` passes it. Its body carries the version's changelog (decision 64): a `## Changelog` heading followed by
    exactly the output of `scripts/release-notes.sh vX.Y.Z`, which is also the text of the GitHub
    Release. `pr-conventions-check` (condition 4) fails it otherwise and runs again when the body is
    edited. Build the body from the changelog instead of typing it:
@@ -392,9 +588,12 @@ otherwise ❌ naming the failed checks and up to three issues. It **never rolls 
 decides, with one of the paths below. The token is the secret `GLITCHTIP_API_TOKEN` in environment
 `prod`: a GlitchTip API token with read-only scopes (`project:read`, `event:read`), never printed;
 the API address is derived from `SENTRY_DSN` (or `GLITCHTIP_API_URL` in a console).
+With `target=srv` the watch instead runs 3 minutes over the VPN against the srv host's proxy; see
+"Prod on the on-prem srv host" above.
 
-**Rollback, two ways**, both with the typed confirm `ROLLBACK-prod`, both moving the ECR tags
-`prod-current`/`prod-previous`:
+**Rollback, two ways**, both with the typed confirm `ROLLBACK-prod`. Both move the ECR tags
+`prod-current`/`prod-previous` while the AWS host is the live prod; while srv is live, they move
+`prod-aws-current`/`prod-aws-previous` instead (see "Prod on the on-prem srv host" above):
 
 ```
 gh workflow run "Kamal Manage" --ref main -f action=rollback -f confirm=ROLLBACK-prod [-f version=<sha>]
@@ -475,11 +674,14 @@ on every push to `main` that the commit came from a merged pull request and aler
 (condition 1); the title is `PILOT-<n>: <card title>` (condition 2); the body has exactly one line
 starting with `Type:`, with one of `feat`, `fix`, `chore`, `docs`, `refactor`, `test`, `ci`
 (condition 3); a release PR titled `PILOT-<n>: Release vX.Y.Z` has a `## Changelog` section that is
-the CHANGELOG.md section `[X.Y.Z]` verbatim (condition 4, decision 64). The title and body become the
+the CHANGELOG.md section `[X.Y.Z]` verbatim (condition 4, decision 64); a release or release-prep PR
+is titled with the release's own card, never `PILOT-0` (condition 5, decision 91). The title and body become the
 squash commit.
 
 `TDD check` does not check commits that are already on `main` (so a back-merge of `main` into
-`develop` passes), and skips the release PR `develop` → `main`.
+`develop` passes), and skips the release PR `develop` → `main`. It compares against the live base
+branch (`origin/<base ref>`), not the base sha recorded for the event, so commits that come in by
+merging `develop` never count as the pull request's own.
 
 `changelog-check` runs on every pull request into `main` or `develop` (`bin/changelog-check`): a
 `Type: feat` or `Type: fix` PR must change `[Unreleased]` in `CHANGELOG.md` or add a version section;
@@ -487,8 +689,9 @@ the label `skip-changelog` passes it. `Release` runs on every pushed `v*` tag (s
 
 ## AI PR review
 
-`.github/workflows/ai-review.yml` (check `AI review`, decision 32) reviews human pull requests with
-`anthropics/claude-code-action` (Sonnet 5.5, `claude-sonnet-5-5`, read-only tools).
+`.github/workflows/ai-review.yml` (check `AI review`, decision 32) reviews pull requests with
+`anthropics/claude-code-action` (Sonnet 5.5, `claude-sonnet-5-5`, read-only tools) and posts the result as a
+GitHub pull request review (decision 103 a).
 
 **Switch.** The repository variable `AI_REVIEW`: only the exact value `on` runs a review. Anything
 else, including unset, ends the check green in seconds with `AI review disabled (AI_REVIEW=off)` and
@@ -502,18 +705,39 @@ passed as the action input `claude_code_oauth_token`. The alternative is an Anth
 
 **Triggers.** Pull request `opened`, `reopened`, `ready_for_review`, `synchronize` (a push, also after
 "changes requested") and `review_requested`. To ask for a re-review without a push, comment
-`@claude review` on the PR (only users with write access; the action refuses others).
+`@claude review` on the PR (only users with write access; the action refuses others). On a head commit
+that already has its review, the check runs again but no second review is posted; when its result has no
+P0/P1 it still dismisses this workflow's own requests for changes, the head's own included, so a failed
+dismissal is retried.
 
-**Skips.** The factory's `archon/task-factory-*` PRs (the factory reviews its own PRs, decision R-C5),
-dependabot, draft PRs and the release PR `develop` → `main`: the job is skipped, or green with
-`AI review skipped: <reason>` when triggered by a comment.
+**Skips.** Dependabot, draft PRs and the release PR `develop` → `main`: the job is skipped, or green with
+`AI review skipped: <reason>` when triggered by a comment. The factory's `archon/task-factory-*` PRs are
+reviewed like any other (decision 103 a).
 
 **What red means.** While `on`, the review found P0 or P1 findings: fix them and push, and it runs
-again. It is also red when the review produced no valid summary (fail closed). The single PR comment,
-updated on every run, lists the findings as `path:line` with severity and ends with
-`AI-REVIEW: P0=n P1=n P2=n`; `ai-review/result.json` holds the same counts in the job workspace. The
-factory merge-gate refuses non-green checks; making `AI review` a required check by branch protection
-follows with PUB.
+again. It is also red when the review produced no valid summary (fail closed), including findings that
+do not match the counts. The job log lists every P0/P1 as `AI review P1 path:line - title` with its
+explanation, with the model text kept inert (no workflow commands); `ai-review/result.json` holds the
+counts in the job workspace. The factory merge-gate
+refuses non-green checks; making `AI review` a required check by branch protection follows with PUB.
+
+**The review.** `bin/ai-review-submit` posts one review per head commit; it appears under "Reviewers" as
+`github-actions`. Findings on lines of the diff are inline comments, whatever the file path (also paths
+with spaces, quotes or non-ASCII characters); the others are listed in the review body, which ends with
+`AI-REVIEW: P0=n P1=n P2=n`. Each finding is listed once: the model's summary at the top of the body does
+not repeat them. The body and every inline comment are capped at 60000 characters (GitHub rejects more than
+65536) and end with a truncation note when cut; the job log still lists every P0/P1. It requests changes on
+P0/P1 and is a comment otherwise; a review without P0/P1, also a re-run on an already reviewed head,
+dismisses this workflow's earlier requests for changes, even when the review itself could not be posted.
+This workflow's own reviews are the `github-actions` reviews whose body starts with `<!-- ai-review -->`; a
+`github-actions` review from another workflow neither stops the review of its head nor is dismissed. The
+job log reports `REQUEST_CHANGES|COMMENT, n inline, m in
+the body`. When GitHub refuses the inline comments, the review is posted once more with every finding in
+the body. A review that cannot
+be posted shows a warning and leaves the check as the gate decided. The step holds a write token, so it
+runs the script from the workflow's own revision rather than the reviewed PR head checkout: the default
+branch for an `@claude review` comment, the PR's merge commit (which also carries the PR's own workflow)
+for a `pull_request` event.
 
 **Cost.** One review per triggering event, at most 25 turns and a 15-minute job timeout; a push
 cancels a running review. Reviews count against the Claude subscription's usage limits of the
@@ -596,6 +820,24 @@ curl -X 'GET' \
 ```
 bundle exec rspec
 ```
+
+## NFR load run
+
+`perf/nfr_load.rb` runs the todolist PRD §6 load scenarios before a release, against dev after a Dev Deploy: the
+dashboard list (`GET /api/v1/projects`) for a user with 50 projects and 500 tasks, and a task status change, each
+against p95 ≤ 300 ms on server timing (`X-Runtime`). Ruby stdlib only, from the repository root:
+
+```
+ruby perf/nfr_load.rb https://dev.pilot.up.km.ua
+```
+
+- Defaults: 100 requests per scenario at 10 a second, concurrency 10 (`NFR_REQUESTS`, `NFR_RATE`, `NFR_CONCURRENCY`).
+  It prints server and client p50/p95/p99, the error rate and PASS or FAIL. Exit 0 both pass, 1 one fails, 2 refused,
+  aborted or `CLEANUP INCOMPLETE`.
+- It signs up one throwaway `nfr-load-…@example.com` user (one of the 5 sign-ups an hour per source IP) and never
+  signs in. It deletes its projects and tasks and signs out, also on an abort or a Ctrl-C; the user stays.
+- It refuses every host but `dev.pilot.up.km.ua`, `localhost` and `127.0.0.1`: never run it against prod. Record a
+  run in `docs/features/<slug>/_review/nfr-load-<date>.md`.
 
 ## Troubleshooting
 

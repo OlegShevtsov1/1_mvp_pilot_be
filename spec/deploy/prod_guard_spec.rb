@@ -5,7 +5,7 @@ RSpec.describe 'deploy/prod_guard.sh' do
 
   def guard(mode, env)
     full_env = { 'REF' => 'refs/heads/main', 'ENVIRONMENT' => nil, 'CONFIRM' => nil, 'VERSION' => nil, 'ACTION' => nil,
-                 'MIRROR' => nil, 'SOURCE_SHA' => nil }
+                 'MIRROR' => nil, 'SOURCE_SHA' => nil, 'TARGET' => nil }
     Open3.capture2e(full_env.merge(env), Rails.root.join('deploy/prod_guard.sh').to_s, mode)
   end
 
@@ -49,13 +49,13 @@ RSpec.describe 'deploy/prod_guard.sh' do
     it 'prints the release tag for the next checks' do
       output, status = guard('deploy', valid)
       expect(status).to be_success, output
-      expect(output).to eq("tag=v0.1.0\n")
+      expect(output).to eq("tag=v0.1.0\ndestination=prod\n")
     end
 
     it 'on the mirror (MIRROR=true) prints the tag and the source_sha' do
       output, status = guard('deploy', valid.merge('VERSION' => 'v0.2.0', 'MIRROR' => 'true', 'SOURCE_SHA' => sha))
       expect(status).to be_success, output
-      expect(output).to eq("tag=v0.2.0\nsource_sha=#{sha}\n")
+      expect(output).to eq("tag=v0.2.0\nsource_sha=#{sha}\ndestination=prod\n")
     end
 
     it 'on the mirror refuses a missing or malformed source_sha, naming mirror mode' do
@@ -81,6 +81,33 @@ RSpec.describe 'deploy/prod_guard.sh' do
         expect(output).not_to include('tag=')
       end
     end
+
+    it 'targets the AWS host for target=aws and when no target is given' do
+      [ 'aws', nil ].each do |target|
+        output, status = guard('deploy', valid.merge('TARGET' => target))
+        expect(status).to be_success, output
+        expect(output).to eq("tag=v0.1.0\ndestination=prod\n"), target.inspect
+      end
+    end
+
+    it 'targets prod-srv for target=srv under the same dual control' do
+      output, status = guard('deploy', valid.merge('TARGET' => 'srv'))
+      expect(status).to be_success, output
+      expect(output).to eq("tag=v0.1.0\ndestination=prod-srv\n")
+
+      [ { 'CONFIRM' => 'yes' }, { 'REF' => 'refs/heads/feature' }, { 'VERSION' => sha } ].each do |broken|
+        output, status = guard('deploy', valid.merge('TARGET' => 'srv').merge(broken))
+        expect(status.exitstatus).to eq(1), broken.inspect
+        expect(output).not_to include('destination=')
+      end
+    end
+
+    it 'refuses an unknown target' do
+      output, status = guard('deploy', valid.merge('TARGET' => 'gcp'))
+      expect(status.exitstatus).to eq(1)
+      expect(output).to include('::error::target must be aws or srv')
+      expect(output).not_to include('tag=')
+    end
   end
 
   describe 'manage' do
@@ -88,7 +115,7 @@ RSpec.describe 'deploy/prod_guard.sh' do
       %w[status logs].each do |action|
         output, status = guard('manage', 'ACTION' => action)
         expect(status).to be_success
-        expect(output).to eq("version=\n")
+        expect(output).to eq("version=\ndestination=prod\n")
       end
     end
 
@@ -105,13 +132,13 @@ RSpec.describe 'deploy/prod_guard.sh' do
     it 'rolls back with confirm=ROLLBACK-prod to the previous version when none is given' do
       output, status = guard('manage', 'ACTION' => 'rollback', 'CONFIRM' => 'ROLLBACK-prod')
       expect(status).to be_success
-      expect(output).to eq("version=\n")
+      expect(output).to eq("version=\ndestination=prod\n")
     end
 
     it 'normalises an explicit rollback version' do
       output, status = guard('manage', 'ACTION' => 'rollback', 'CONFIRM' => 'ROLLBACK-prod', 'VERSION' => sha)
       expect(status).to be_success
-      expect(output).to eq("version=sha-#{sha}\n")
+      expect(output).to eq("version=sha-#{sha}\ndestination=prod\n")
     end
 
     it 'refuses a rollback with confirm=prod, with or without a version' do
@@ -126,6 +153,19 @@ RSpec.describe 'deploy/prod_guard.sh' do
       output, status = guard('manage', 'ACTION' => 'remove', 'CONFIRM' => 'prod')
       expect(status.exitstatus).to eq(1)
       expect(output).to include('remove needs confirm=remove-prod')
+    end
+
+    it 'rolls back prod-srv for target=srv' do
+      output, status = guard('manage', 'ACTION' => 'rollback', 'CONFIRM' => 'ROLLBACK-prod', 'TARGET' => 'srv')
+      expect(status).to be_success, output
+      expect(output).to eq("version=\ndestination=prod-srv\n")
+    end
+
+    it 'refuses remove on srv, where it would also remove the shared kamal-proxy' do
+      output, status = guard('manage', 'ACTION' => 'remove', 'CONFIRM' => 'remove-prod', 'TARGET' => 'srv')
+      expect(status.exitstatus).to eq(1)
+      expect(output).to include('::error::remove is refused on srv')
+      expect(output).not_to include('destination=')
     end
 
     it 'refuses an unknown action' do

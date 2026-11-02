@@ -32,6 +32,17 @@ RSpec.describe 'config/deploy.dev.yml' do
     expect(proxy.deploy_options[:'health-check-path']).to eq('/health')
   end
 
+  it 'runs the daily purge in a cron role from the same image, without the proxy' do
+    cron = config.role(:cron)
+
+    expect(config.roles.map(&:name)).to contain_exactly('web', 'cron')
+    expect(cron.hosts).to eq([ '192.0.2.10' ])
+    expect(cron.cmd).to eq('bin/purge-scheduler')
+    expect(cron.running_proxy?).to be(false)
+    expect(cron.env('192.0.2.10').secret_keys).to include('SENTRY_DSN')
+    expect(config.role(:web).cmd).to be_nil
+  end
+
   it 'runs its own database and redis accessories' do
     expect(config.accessories.map(&:service_name)).to eq([ "#{name}-dev-db", "#{name}-dev-redis" ])
   end
@@ -59,7 +70,7 @@ RSpec.describe 'config/deploy.dev.yml' do
   describe 'public-safety' do
     files = %w[
       config/deploy.dev.yml .kamal/secrets.dev .github/workflows/dev-deploy.yml
-      config/deploy.yml .kamal/secrets.prod .github/workflows/kamal-deploy.yml .github/workflows/kamal-manage.yml
+      config/deploy.yml config/deploy.prod-srv.yml .kamal/secrets.prod .github/workflows/kamal-deploy.yml .github/workflows/kamal-manage.yml
       .github/workflows/release.yml .github/workflows/main-guard.yml .github/workflows/develop-guard.yml
     ] + Dir.glob('deploy/*', base: Rails.root.to_s)
     forbidden = {

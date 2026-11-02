@@ -15,16 +15,18 @@ module Auth
       proxies.any? { |proxy| proxy === request.remote_addr } ? request.remote_ip : request.remote_addr
     end
 
+    # Windows are clock minutes and each has its own key, so the key names the window an attempt was counted in:
+    # both stores agree on it whatever each one remembers, and a give-back reaches only that window.
     def initialize(request)
-      @key = "failed-sign-in:#{self.class.source_of(request)}"
+      @key = "failed-sign-in:#{self.class.source_of(request)}:#{Time.current.to_i / WINDOW.to_i}"
     end
 
     def attempt_refused?
       count(1) > LIMIT
     end
 
-    # An increment on a key whose window ended starts a new window at that amount, so a give-back landing after the
-    # window ended is undone instead of opening the next window below zero.
+    # Gives the attempt back to the window it was counted in. A window whose count was lost (a cleared or failed
+    # store) is not left below zero.
     def give_back
       count(1) if count(-1).negative?
     end

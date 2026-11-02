@@ -22,6 +22,84 @@ its entry under `[Unreleased]` (checked by `changelog-check`); a release moves t
 
 ### Security
 
+## [0.4.0] - 2026-11-02
+
+### Added
+
+- The API contract documents the token, revoke and sign-out operations, bearer authentication, the 429 answers of
+  sign-up and sign-in and the deprecated legacy sign-in; its examples carry placeholder tokens (PILOT-241).
+- A task created without a status starts as not started; the API contract documents bearer authentication and the
+  401 and 404 answers of every project and task operation (PILOT-242).
+- A daily purge of token rows revoked or expired more than 30 days ago and of legacy-use rows older than 60 days,
+  run by a new Kamal role `cron` from the app image; a failed run is reported to GlitchTip (PILOT-240, T13).
+- Kamal Deploy and Kamal Manage take a `target` input: `aws` (the default) is unchanged, `srv` deploys, operates
+  and watches the same release on the on-prem srv host with its own config, accessories and ECR tags
+  `prod-srv-current`/`prod-srv-previous` (PILOT-550).
+- A `Prod Switch` workflow moves prod between the AWS instance and the on-prem srv host in either direction: it
+  brings the target to the live release, puts the live prod into maintenance, moves the database with a final
+  dump and restore whose row counts must match, switches DNS through the infra prod stack only after the
+  operator's `prod-dns` approval, checks the public URLs and moves `prod-current`/`prod-previous`; any failure
+  before DNS brings the live prod back, once public DNS and the jobs API show that DNS was never touched. For
+  `to=aws` while the AWS instance is stopped or deleted, it starts or re-creates it through infra
+  `prod_target=aws-standby` after the `prod-dns` approval, without moving DNS. The target gets the release through
+  a Kamal Deploy it dispatches. Kamal Deploy and Kamal Manage follow the live prod host from public DNS, and Kamal
+  Deploy takes an optional `prod_switch_run`, set only by Prod Switch (PILOT-553).
+
+### Changed
+
+- The AI PR review is posted as a GitHub pull request review by `github-actions` (changes requested on P0/P1,
+  otherwise a comment) with inline comments on the changed lines, dismisses its earlier request for changes
+  once clean, lists P0/P1 findings in the job log, and also reviews the factory's `archon/task-factory-*` PRs
+  (PILOT-369).
+
+### Fixed
+
+- The dashboard list (`GET /api/v1/projects`) of a user with 50 projects and 500 tasks took about a second on the
+  server; the project serializer no longer builds a serializer per task and per owner, so the list is several times
+  faster and its response is unchanged (PILOT-414).
+- Creating a task with a status other than not_started, in_progress or completed answered 500; it now answers 422
+  and names the allowed statuses (PILOT-242).
+- The post-deploy smoke's token check no longer records a failed sign-in: it provokes the token endpoint's
+  invalid_grant with an unknown refresh token instead of a wrong password (PILOT-331).
+- The post-deploy smoke no longer records a failed sign-in at the legacy sign-in: it no longer sends a wrong
+  password to /api/v1/sign_in, whose 401 the request specs cover (PILOT-333).
+- A successful sign-in whose check outlasted its minute, or one around a deploy, could leave the failed sign-in
+  count one short, so the 11th failure in a minute was not always refused; each attempt is now given back only to
+  the minute it was counted in (PILOT-288).
+- `bin/wait-dev-deploy` accepts a Dev Deploy run that deployed a newer commit containing the merge instead of
+  failing it as superseded, counts a run as deployed once its Deploy job finished instead of waiting for Report
+  and Notify, and waits up to 1440 s by default (under the factory's 1500 s deploy limit), so a deployed merge no
+  longer fails or times out (PILOT-268).
+- `bin/wait-dev-deploy` takes the sdlc v0.7.0 template waiter: a cancelled run of the commit counts as deployed
+  when a newer commit that contains it deployed, read-only GitHub calls are retried on a 5xx or network error (3
+  tries, `WAIT_DEV_DEPLOY_RETRY_SECONDS` backoff; the dispatch never is), an unreadable Gate log is read again on
+  the next poll instead of failing the wait, and a failed job with spaces in its name is reported whole
+  (PILOT-495).
+- RuboCop run from a checkout under a hidden directory, such as the factory's worktrees, no longer inspects
+  excluded files like `db/schema.rb` and `bin/*`; it is updated to 1.86.2, which fixes the skipped excludes
+  (PILOT-360).
+- The production image no longer installs or loads development and test gems (bullet, rspec-rails,
+  rubocop-rails, shoulda-matchers, listen, factory_bot_rails, rails-controller-testing, rspec_junit_formatter):
+  they moved from the default Gemfile group into the development and test groups (PILOT-376).
+- The AI PR review matches the 1_mvp_sdlc template: inline comments also anchor on files whose path has spaces,
+  quotes or non-ASCII characters, a clean re-run on an already reviewed head still dismisses the review's own
+  request for changes and retries a failed dismissal, the job log shows the P0/P1 findings with model text kept
+  inert and how many findings went inline, each finding is listed once, the review body and every inline
+  comment are capped at 60000 characters, only reviews whose body starts with `<!-- ai-review -->` count as its
+  own, and the review keeps the subscription token and Sonnet 5.5 (PILOT-369).
+
+### Security
+
+- The error tunnel `POST /api/errors` also accepts envelopes whose DSN carries the frontend's public host instead
+  of the internal GlitchTip host, with or without a secret key, matching on public key and project id only; it
+  still forwards only to the GlitchTip of `SENTRY_ALLOWED_FE_DSN`, so the frontend no longer needs to publish the
+  internal host (PILOT-408).
+- Update rack to 3.1.23 (GHSA-5v64-555j-wjxm, GHSA-2j8w-xcrc-x985, GHSA-wvg4-6p58-3gh3 and GHSA-p8x9-v4hv-2w4g),
+  so bundler-audit passes again (PILOT-556).
+- Update addressable to 2.9.1 (GHSA-qq38-m9mg-xjj5, GHSA-8gmh-2hhj-2hv9, GHSA-9crm-g4mf-wc5j,
+  GHSA-539f-xcgw-2gjg, GHSA-4w5q-wg7v-w6gp, GHSA-9f42-57jx-vpp3 and GHSA-j82w-28jv-3pmj), so bundler-audit
+  passes again (PILOT-589).
+
 ## [0.3.2] - 2026-10-28
 
 ### Security

@@ -8,9 +8,8 @@ module AuthHelper
     controller.instance_variable_set(:@current_user, user)
   end
 
-  def authenticate_with_token
-    let(EMAIL_HEADER) { email }
-    let(TOKEN_HEADER) { token }
+  def authenticate_with_bearer
+    let(:Authorization) { "Bearer #{create(:oauth_access_token, resource_owner_id: user.id).plaintext_token}" }
   end
 
   def authenticate_with_user
@@ -24,7 +23,7 @@ module AuthHelper
   end
 
   def auth_security
-    security [ { x_auth_token: [], x_auth_email: [] } ]
+    security [ { bearer_auth: [] }, { x_auth_token: [], x_auth_email: [] } ]
   end
 end
 

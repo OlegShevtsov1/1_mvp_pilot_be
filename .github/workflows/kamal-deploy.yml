@@ -1,10 +1,22 @@
 name: Kamal Deploy
+run-name: Kamal Deploy ${{ inputs.target }} ${{ inputs.version }}${{ inputs.prod_switch_run != '' && ' for Prod Switch ' || '' }}${{ inputs.prod_switch_run }}
 
 # Deploys a release to prod with Kamal 2 (config/deploy.yml) through the shared mvp VPN
 # (vpn-up/vpn-down from 1_mvp_infra). Nothing is built: deploy/deploy.sh prod promotes the image
 # sha-<sha> that Dev Deploy built for the tagged commit to prod-sha-<sha> (same layers, prod service
 # label) and, after /health and the read-only smoke pass, points the ECR tag prod-current at it (the
-# image it replaces becomes prod-previous). See README "Prod deploy" and "Релізи й hotfix".
+# image it replaces becomes prod-previous). See README "Prod deploy" and "Releases and hotfixes".
+#
+# Target: aws (the default) deploys to the AWS instance with config/deploy.yml, exactly as before.
+# srv deploys the same release to the on-prem srv host with config/deploy.prod-srv.yml
+# (deploy/deploy.sh prod-srv) and moves prod-srv-current/prod-srv-previous; its health checks, smoke
+# and release-watch go over the VPN straight to that host's shared kamal-proxy. See README "Prod on
+# the on-prem srv host".
+#
+# The deploy job reads the live prod host from public DNS inside the kamal-prod lock
+# (deploy/prod_active_target.sh; after a Prod Switch it may be srv, and a deploy queued behind that
+# switch must see its result): prod-current/prod-previous follow the live host, and an aws deploy while
+# srv is live checks /health inside the container and skips the smoke and release-watch.
 #
 # Dual control: runs only from main, with environment=prod, confirm=prod and a version that is a
 # release tag vX.Y.Z, annotated and on main, whose image is already in ECR; a bare sha is refused.
@@ -15,7 +27,12 @@ name: Kamal Deploy
 # pair and the mirror's tag passes the same tag checks, and the image sha-<source_sha> the primary's
 # Dev Deploy built is promoted, never built here.
 #
-# release-watch then watches prod for 10 minutes (/health every 30 s, then the new GlitchTip
+# prod_switch_run is set only by Prod Switch, which holds kamal-prod for its whole run and waits for
+# this deploy of its target: the deploy job then takes the group kamal-prod-switch instead, and the
+# guard refuses unless that run is an in-progress Prod Switch on main to this target and the target
+# is not the live host (deploy/prod_switch.sh switch-run-check).
+#
+# release-watch then watches prod for 10 minutes, srv 3 (/health every 30 s, then the new GlitchTip
 # issues of <PROJECT_NAME>-be-prod) and reports ✅ or ❌. It never rolls back: a person decides.
 
 on:
@@ -26,6 +43,12 @@ on:
         required: true
         type: choice
         options: [prod]
+      target:
+        description: Prod host - aws (the AWS instance) or srv (the on-prem srv host); Prod Switch decides which one is live
+        required: true
+        type: choice
+        options: [aws, srv]
+        default: aws
       version:
         description: Release tag vX.Y.Z (annotated, on main); a bare sha is refused
         required: true
@@ -38,6 +61,11 @@ on:
         description: Type prod to deploy
         required: true
         type: string
+      prod_switch_run:
+        description: Set only by Prod Switch - its run id; leave empty
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -49,10 +77,14 @@ jobs:
   guard:
     name: ${{ vars.MIRROR == 'true' && 'Guard, mirror mode (ref, confirm, version, source_sha)' || 'Guard, primary mode (ref, confirm, version)' }}
     runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      actions: read
     outputs:
       tag: ${{ steps.inputs.outputs.tag }}
       version: ${{ steps.mirror.outputs.version || steps.tag.outputs.version }}
       source_sha: ${{ steps.inputs.outputs.source_sha }}
+      destination: ${{ steps.inputs.outputs.destination }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -67,6 +99,7 @@ jobs:
           VERSION: ${{ inputs.version }}
           MIRROR: ${{ vars.MIRROR == 'true' }}
           SOURCE_SHA: ${{ inputs.source_sha }}
+          TARGET: ${{ inputs.target }}
         run: deploy/prod_guard.sh deploy >> "${GITHUB_OUTPUT}"
 
       - name: Check that the version is an annotated release tag on main
@@ -83,6 +116,20 @@ jobs:
           SOURCE_SHA: ${{ steps.inputs.outputs.source_sha }}
         run: deploy/mirror_source_check.sh "${TAG}" "${SOURCE_SHA}" >> "${GITHUB_OUTPUT}"
 
+      # Outside the kamal-prod lock: only for the Prod Switch check, which holds that lock.
+      - name: Find the live prod host (public DNS)
+        id: active
+        run: deploy/prod_active_target.sh >> "${GITHUB_OUTPUT}"
+
+      - name: Check the Prod Switch run
+        if: inputs.prod_switch_run != ''
+        env:
+          RUN_ID: ${{ inputs.prod_switch_run }}
+          TARGET: ${{ inputs.target }}
+          ACTIVE_TARGET: ${{ steps.active.outputs.active_target }}
+          GH_TOKEN: ${{ github.token }}
+        run: deploy/prod_switch.sh switch-run-check "${RUN_ID}"
+
   # Only names are checked and printed, never values.
   preflight:
     name: Preflight (secrets)
@@ -98,6 +145,9 @@ jobs:
           VPN_CI_OVPN: ${{ secrets.VPN_CI_OVPN }}
           PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
           PROD_VPN_IP: ${{ secrets.PROD_VPN_IP }}
+          PROD_SRV_SSH_KEY: ${{ secrets.PROD_SRV_SSH_KEY }}
+          PROD_SRV_VPN_IP: ${{ secrets.PROD_SRV_VPN_IP }}
+          DESTINATION: ${{ needs.guard.outputs.destination }}
           INFRA_READ_TOKEN: ${{ secrets.INFRA_READ_TOKEN }}
           SECRET_KEY_BASE: ${{ secrets.SECRET_KEY_BASE }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
@@ -112,8 +162,10 @@ jobs:
           # PROJECT_NAME comes from config/project.env and KAMAL_REGISTRY_PASSWORD from the ECR
           # login inside deploy.sh; every other variable .kamal/secrets.prod reads is a secret.
           mapfile -t kamal_secrets < <(secret_names .kamal/secrets.prod | grep -vxE 'PROJECT_NAME|KAMAL_REGISTRY_PASSWORD')
+          host_secrets=(PROD_SSH_KEY PROD_VPN_IP)
+          if [[ "${DESTINATION}" == 'prod-srv' ]]; then host_secrets=(PROD_SRV_SSH_KEY PROD_SRV_VPN_IP); fi
           required=(
-            AWS_ROLE_ARN VPN_CI_OVPN PROD_SSH_KEY PROD_VPN_IP INFRA_READ_TOKEN
+            AWS_ROLE_ARN VPN_CI_OVPN "${host_secrets[@]}" INFRA_READ_TOKEN
             "${kamal_secrets[@]}"
             TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID TELEGRAM_PILOT_PROD_ALERTS_THREAD_ID
           )
@@ -177,18 +229,22 @@ jobs:
     runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
     environment: prod
     timeout-minutes: 30
-    # Shared with Kamal Manage, on this job only: two prod operations never overlap, and a
-    # rollback does not wait for release-watch.
+    # Shared with Kamal Manage and Prod Switch, on this job only: two prod operations never overlap,
+    # and a rollback does not wait for release-watch. A deploy for Prod Switch (checked in the guard)
+    # runs while that switch holds kamal-prod.
     concurrency:
-      group: kamal-prod
+      group: ${{ inputs.prod_switch_run != '' && 'kamal-prod-switch' || 'kamal-prod' }}
       cancel-in-progress: false
     permissions:
       id-token: write
       contents: read
+    outputs:
+      active_target: ${{ steps.active.outputs.active_target }}
     env:
       TAG: ${{ needs.guard.outputs.tag }}
       VERSION: ${{ needs.guard.outputs.version }}
       SOURCE_SHA: ${{ needs.guard.outputs.source_sha }}
+      DESTINATION: ${{ needs.guard.outputs.destination }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -207,6 +263,12 @@ jobs:
             scripts
             host
             projects
+
+      # Inside the lock, so a deploy queued behind a Prod Switch sees the host it left live. Before
+      # any VPN: vpn-up resolves the VPN zones through the VPN's own DNS.
+      - name: Find the live prod host (public DNS)
+        id: active
+        run: deploy/prod_active_target.sh >> "${GITHUB_OUTPUT}"
 
       # Before vpn-up: everything slow happens outside the VPN lock window.
       - uses: ruby/setup-ruby@v1
@@ -241,9 +303,12 @@ jobs:
       - name: Load the prod SSH key into an agent (never written to disk)
         env:
           PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+          PROD_SRV_SSH_KEY: ${{ secrets.PROD_SRV_SSH_KEY }}
         run: |
+          key="${PROD_SSH_KEY}"
+          if [[ "${DESTINATION}" == 'prod-srv' ]]; then key="${PROD_SRV_SSH_KEY}"; fi
           eval "$(ssh-agent -a "${RUNNER_TEMP}/ssh-agent.sock")" > /dev/null
-          ssh-add - <<< "${PROD_SSH_KEY}"
+          ssh-add - <<< "${key}"
           echo "SSH_AUTH_SOCK=${SSH_AUTH_SOCK}" >> "${GITHUB_ENV}"
 
       - name: VPN up
@@ -257,9 +322,12 @@ jobs:
       - name: Check that prod is reachable over the VPN
         env:
           PROD_VPN_IP: ${{ secrets.PROD_VPN_IP }}
+          PROD_SRV_VPN_IP: ${{ secrets.PROD_SRV_VPN_IP }}
         run: |
+          host="${PROD_VPN_IP}"
+          if [[ "${DESTINATION}" == 'prod-srv' ]]; then host="${PROD_SRV_VPN_IP}"; fi
           for attempt in 1 2 3; do
-            if nc -z -w 5 "${PROD_VPN_IP}" 22; then
+            if nc -z -w 5 "${host}" 22; then
               echo "prod SSH is reachable over the VPN"
               exit 0
             fi
@@ -272,6 +340,7 @@ jobs:
       - name: Deploy
         env:
           PROD_VPN_IP: ${{ secrets.PROD_VPN_IP }}
+          PROD_SRV_VPN_IP: ${{ secrets.PROD_SRV_VPN_IP }}
           SECRET_KEY_BASE: ${{ secrets.SECRET_KEY_BASE }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
@@ -279,17 +348,22 @@ jobs:
           SMOKE_TOKEN: ${{ secrets.SMOKE_TOKEN }}
           GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
           OAUTH_CLIENT_ID: ${{ vars.OAUTH_CLIENT_ID }}
-        run: deploy/deploy.sh prod "${TAG}" ${SOURCE_SHA:+"${SOURCE_SHA}"}
+          PROD_ACTIVE_TARGET: ${{ steps.active.outputs.active_target }}
+        run: deploy/deploy.sh "${DESTINATION}" "${TAG}" ${SOURCE_SHA:+"${SOURCE_SHA}"}
 
       - name: VPN down
         if: always()
         uses: ./infra-helpers/.github/actions/vpn-down
 
-  # Polls the public URL without the VPN; the shared VPN lock is held only for the one GlitchTip
-  # query at the end, so other deploys are not blocked for 10 minutes.
+  # aws: polls the public URL without the VPN; the shared VPN lock is held only for the one
+  # GlitchTip query at the end, so other deploys are not blocked for 10 minutes. srv: the watch goes
+  # over the VPN straight to the srv host's proxy, so the lock is held for the whole watch, which
+  # is therefore 3 minutes: every other job's vpn-up gives up after waiting 300 s for the lock.
+  # An AWS host that is not the live prod is not watched: its public URL is the srv host's.
   release-watch:
-    name: Release watch (10 min)
+    name: Release watch
     needs: [guard, deploy]
+    if: needs.guard.outputs.destination != 'prod' || needs.deploy.outputs.active_target == 'aws'
     runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
     environment: prod
     timeout-minutes: 20
@@ -316,16 +390,29 @@ jobs:
             host
             projects
 
-      - name: Watch /health for 10 minutes
-        id: health
-        run: deploy/release_watch.sh health "${VERSION}" >> "${GITHUB_OUTPUT}"
-
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: VPN up before the srv watch
+        if: needs.guard.outputs.destination == 'prod-srv'
+        uses: ./infra-helpers/.github/actions/vpn-up
+        with:
+          ovpn: ${{ secrets.VPN_CI_OVPN }}
+          ci-vpn-ip: ${{ secrets.CI_VPN_IP }}
+          dev-host: ${{ secrets.DEV_HOST }}
+          dns-zones: ${{ vars.DNS_ZONES }}
+
+      - name: Watch /health
+        id: health
+        env:
+          WATCH_DESTINATION: ${{ needs.guard.outputs.destination }}
+          PROD_SRV_VPN_IP: ${{ secrets.PROD_SRV_VPN_IP }}
+        run: deploy/release_watch.sh health "${VERSION}" >> "${GITHUB_OUTPUT}"
+
       - name: VPN up
+        if: needs.guard.outputs.destination != 'prod-srv'
         uses: ./infra-helpers/.github/actions/vpn-up
         with:
           ovpn: ${{ secrets.VPN_CI_OVPN }}
@@ -355,6 +442,7 @@ jobs:
           CHECKS: ${{ steps.health.outputs.checks }}
           FAILED: ${{ steps.health.outputs.failed }}
           GLITCHTIP_OUTCOME: ${{ steps.glitchtip.outcome }}
+          WATCH_DESTINATION: ${{ needs.guard.outputs.destination }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: ISSUES_FILE="${RUNNER_TEMP}/issues.jsonl" deploy/release_watch.sh verdict >> "${GITHUB_OUTPUT}"
 
@@ -385,6 +473,7 @@ jobs:
         id: summarize
         env:
           VERSION: ${{ needs.guard.outputs.tag || inputs.version }}
+          WHERE: ${{ needs.guard.outputs.destination || 'prod' }}
           MODE: ${{ vars.MIRROR == 'true' && 'mirror' || 'primary' }}
           GUARD: ${{ needs.guard.result }}
           PREFLIGHT: ${{ needs.preflight.result }}
@@ -423,10 +512,10 @@ jobs:
             fi
           done
           if [[ -n "${failed}" ]]; then
-            message="❌ Kamal Deploy prod ${VERSION:0:16} (${MODE}) failed in ${failed}: $(explain "${failed}") ${RUN_URL}"
+            message="❌ Kamal Deploy ${WHERE} ${VERSION:0:16} (${MODE}) failed in ${failed}: $(explain "${failed}") ${RUN_URL}"
             echo "::error::${failed} failed: $(explain "${failed}")"
           else
-            message="✅ Kamal Deploy prod ${VERSION:0:16} (${MODE}) succeeded ${RUN_URL}"
+            message="✅ Kamal Deploy ${WHERE} ${VERSION:0:16} (${MODE}) succeeded ${RUN_URL}"
           fi
           echo "message=${message}" >> "${GITHUB_OUTPUT}"
           echo "FAILED_JOB=${failed}" >> "${GITHUB_ENV}"

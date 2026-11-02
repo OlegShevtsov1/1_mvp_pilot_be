@@ -9,6 +9,22 @@ RSpec.describe 'bin/swagger_smoke coverage of swagger/v1/swagger.json' do
   # check <name> <expected-status> <method> <path> [json-body] [extra curl args...]
   CHECK_CALL_PATTERN = /^\s*check\s+(?:'[^']*'|"[^"]*")\s+(\d+)\s+([A-Z]+)\s+(?:"([^"]+)"|(\S+))/
 
+  # Documented but never smoke-checked: tripping a limit on a live deploy would refuse the smoke's own sign-ins and
+  # sign-ups and add failed sign-ins. spec/requests/api/v1/sign_up_spec.rb (AC-04b) and
+  # spec/requests/failed_sign_in_limit_spec.rb pin these answers instead.
+  RATE_LIMIT_REFUSALS = [
+    %w[POST /oauth/token 429],
+    %w[POST /api/v1/users 429],
+    %w[POST /api/v1/sign_in 429]
+  ].freeze
+
+  # Documented but never smoke-checked: every 401 of the legacy sign-in counts as a failed sign-in for the deploy's
+  # source (AC-10), so a smoke check would record one per deploy (PILOT-333). spec/requests/api/v1/sessions_spec.rb
+  # and spec/requests/failed_sign_in_limit_spec.rb pin this answer instead.
+  FAILED_SIGN_IN_REFUSALS = [
+    %w[POST /api/v1/sign_in 401]
+  ].freeze
+
   # /api/v1/projects/{id} in the document and /api/v1/projects/$PROJECT_ID (or /999999) in the
   # script are the same operation; reduce every variable-looking segment to one placeholder.
   def normalize(path)
@@ -38,7 +54,7 @@ RSpec.describe 'bin/swagger_smoke coverage of swagger/v1/swagger.json' do
   end
 
   it 'checks every documented operation and status' do
-    expect(documented_checks - smoke_checks).to be_empty
+    expect(documented_checks - smoke_checks - RATE_LIMIT_REFUSALS - FAILED_SIGN_IN_REFUSALS).to be_empty
   end
 
   # Without this, a change to how check calls are written would silently parse to nothing and make

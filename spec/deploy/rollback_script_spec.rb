@@ -29,11 +29,37 @@ RSpec.describe 'deploy/rollback.sh' do
     containers = <<~TXT
       #{service}-web-#{current}
       #{service}-web-#{current}_replaced_1a2b3c4d
+      #{service}-cron-#{previous}_replaced_9a8b7c6d
       #{service}-web-#{previous}_replaced_5e6f7a8b
       #{service}-web-#{oldest}
     TXT
     run_script('rollback.sh', 'dev', release: 'b' * 40, containers: containers, current_version: "#{current}\n") do |_output, status, root|
       expect(status).to be_success
+      expect(kamal_calls(root).last).to eq("exec kamal rollback #{previous} -c config/deploy.dev.yml")
+    end
+  end
+
+  it 'rolls back only the web role to a version from before the cron role' do
+    containers = <<~TXT
+      #{service}-cron-#{current}
+      #{service}-web-#{current}
+      #{service}-web-#{previous}_replaced_5e6f7a8b
+    TXT
+    run_script('rollback.sh', 'dev', release: 'b' * 40, containers: containers, current_version: "#{current}\n") do |output, status, root|
+      expect(status).to be_success, output
+      expect(kamal_calls(root).last).to eq("exec kamal rollback #{previous} --roles web -c config/deploy.dev.yml")
+    end
+  end
+
+  it 'rolls back every role to a version that has a cron container' do
+    containers = <<~TXT
+      #{service}-cron-#{current}
+      #{service}-web-#{current}
+      #{service}-cron-#{previous}_replaced_9a8b7c6d
+      #{service}-web-#{previous}_replaced_5e6f7a8b
+    TXT
+    run_script('rollback.sh', 'dev', previous, release: 'b' * 40, containers: containers) do |output, status, root|
+      expect(status).to be_success, output
       expect(kamal_calls(root).last).to eq("exec kamal rollback #{previous} -c config/deploy.dev.yml")
     end
   end
@@ -100,6 +126,7 @@ RSpec.describe 'deploy/rollback.sh' do
       containers = <<~TXT
         #{name}-web-prod-#{current}
         #{name}-web-prod-#{current}_replaced_1a2b3c4d
+        #{name}-cron-prod-#{previous}_replaced_9a8b7c6d
         #{name}-web-prod-#{previous}_replaced_5e6f7a8b
       TXT
       run_script('rollback.sh', 'prod', env: prod_env, release: 'b' * 40, containers: containers,
@@ -124,6 +151,65 @@ RSpec.describe 'deploy/rollback.sh' do
       run_script('rollback.sh', 'prod', previous, env: prod_env, release: 'c' * 40, files: { 'digests' => digests }) do |_output, status, root|
         expect(status.exitstatus).to eq(1)
         expect(crane_calls(root).grep(/\Atag /)).to be_empty
+      end
+    end
+
+    it 'checks health inside the container and swaps only prod-aws-* while the srv host is the live prod' do
+      files = { 'digests' => "#{digests}prod-aws-current sha256:pc\n", 'exec.txt' => %({"status":"ok","release":"#{previous.delete_prefix('sha-')}"}) }
+      run_script('rollback.sh', 'prod', previous, env: prod_env.merge('PROD_ACTIVE_TARGET' => 'srv'), release: 'c' * 40,
+                                                  files: files) do |output, status, root|
+        expect(status).to be_success, output
+        expect(kamal_calls(root)).to include(/\Aexec kamal app exec --reuse --roles=web -q curl .*localhost:3000\/health -c config\/deploy\.yml\z/)
+        expect(sandbox_log(root, 'curl.log')).to be_empty
+        expect(crane_calls(root).grep(/\Atag /)).to eq([
+          "tag #{repo}@sha256:pc prod-aws-previous",
+          "tag #{repo}@sha256:pb prod-aws-current"
+        ])
+      end
+    end
+  end
+
+  context 'with the prod-srv destination' do
+    let(:name) { project_env.fetch('PROJECT_NAME') }
+    let(:repo) { "registry.example.test/#{name}" }
+    let(:srv_env) { { 'PROD_SRV_VPN_IP' => '192.0.2.80', 'KAMAL_REGISTRY_SERVER' => 'registry.example.test', 'CONFIRM' => 'ROLLBACK-prod' } }
+    let(:digests) { "prod-#{previous} sha256:pb\nprod-#{current} sha256:pc\nprod-srv-current sha256:pc\nprod-current sha256:aws\n" }
+
+    def crane_calls(root)
+      sandbox_log(root, 'crane.log').lines(chomp: true)
+    end
+
+    it 'refuses without the typed confirm ROLLBACK-prod, before any Kamal or crane call' do
+      run_script('rollback.sh', 'prod-srv', previous, env: srv_env.merge('CONFIRM' => 'prod'), files: { 'digests' => digests }) do |output, status, root|
+        expect(status.exitstatus).to eq(1)
+        expect(output).to include('ROLLBACK-prod')
+        expect(kamal_calls(root)).to be_empty
+        expect(crane_calls(root)).to be_empty
+      end
+    end
+
+    it 'also swaps prod-current and prod-previous while the srv host is the live prod' do
+      digests = "prod-#{previous} sha256:pb\nprod-#{current} sha256:pc\nprod-srv-current sha256:pc\nprod-current sha256:pc\n"
+      run_script('rollback.sh', 'prod-srv', previous, env: srv_env.merge('PROD_ACTIVE_TARGET' => 'srv'), release: 'b' * 40,
+                                                      files: { 'digests' => digests }) do |output, status, root|
+        expect(status).to be_success, output
+        expect(crane_calls(root).grep(/\Atag /)).to eq([
+          "tag #{repo}@sha256:pc prod-srv-previous",
+          "tag #{repo}@sha256:pb prod-srv-current",
+          "tag #{repo}@sha256:pc prod-previous",
+          "tag #{repo}@sha256:pb prod-current"
+        ])
+      end
+    end
+
+    it 'rolls back with the srv config and swaps only the prod-srv tags' do
+      run_script('rollback.sh', 'prod-srv', previous, env: srv_env, release: 'b' * 40, files: { 'digests' => digests }) do |output, status, root|
+        expect(status).to be_success, output
+        expect(kamal_calls(root).last).to eq("exec kamal rollback prod-#{previous} -c config/deploy.prod-srv.yml")
+        expect(crane_calls(root).grep(/\Atag /)).to eq([
+          "tag #{repo}@sha256:pc prod-srv-previous",
+          "tag #{repo}@sha256:pb prod-srv-current"
+        ])
       end
     end
   end

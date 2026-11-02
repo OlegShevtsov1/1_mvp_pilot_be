@@ -1,7 +1,8 @@
 require 'rails_helper'
 
 # bundler-audit in CI checks the lock against an advisory database that changes under it; these
-# floors keep the patched versions from being lost by a later lock change (PILOT-299).
+# floors keep the patched versions from being lost by a later lock change (PILOT-299, PILOT-556,
+# PILOT-589).
 RSpec.describe 'Gemfile.lock' do
   let(:locked) do
     Bundler::LockfileParser.new(Rails.root.join('Gemfile.lock').read).specs.to_h { |spec| [ spec.name, spec.version ] }
@@ -13,5 +14,13 @@ RSpec.describe 'Gemfile.lock' do
 
   it 'locks crass at 1.0.8 or later, patched for GHSA-pq4g-8rxf-4g29' do
     expect(locked.fetch('crass')).to be >= Gem::Version.new('1.0.8')
+  end
+
+  it 'locks rack at 3.1.23 or later, patched for GHSA-5v64-555j-wjxm and three more rack advisories' do
+    expect(locked.fetch('rack')).to be >= Gem::Version.new('3.1.23')
+  end
+
+  it 'locks addressable at 2.9.1 or later, patched for GHSA-qq38-m9mg-xjj5 and six more addressable advisories' do
+    expect(locked.fetch('addressable')).to be >= Gem::Version.new('2.9.1')
   end
 end

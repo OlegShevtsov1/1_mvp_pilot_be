@@ -17,10 +17,10 @@
 | T10 | Add POST /api/v1/sign_out for both authentication schemes | ports | 1_mvp_pilot_be | OlegShevtsov1 | M | T5 | done |
 | T11 | Scope project and task lookups to the owner so other users' items are not found | ports | 1_mvp_pilot_be | OlegShevtsov1 | M | T5 | done |
 | T12 | Allow the Authorization header in CORS and read GOOGLE_CLIENT_ID from the environment | wiring | 1_mvp_pilot_be | OlegShevtsov1 | S | — | done |
-| T13 | Add the daily token and legacy-use purge and its Kamal cron role | infra | 1_mvp_pilot_be | OlegShevtsov1 | M | T1, T2 | todo |
-| T14 | Document the sign-up, token, sign-in, sign-out and profile operations in the rswag specs and regenerate swagger.json | tests | 1_mvp_pilot_be | OlegShevtsov1 | L | T6, T7, T9, T10 | todo |
-| T15 | Run the project and task rswag specs under bearer auth and document the 404 answers | tests | 1_mvp_pilot_be | OlegShevtsov1 | M | T11 | todo |
-| T16 | Make bin/swagger_smoke check the contract with a bearer token and keep a marked legacy pass | tests | 1_mvp_pilot_be | OlegShevtsov1 | M | T5, T14, T15 | todo |
+| T13 | Add the daily token and legacy-use purge and its Kamal cron role | infra | 1_mvp_pilot_be | OlegShevtsov1 | M | T1, T2 | done |
+| T14 | Document the sign-up, token, sign-in, sign-out and profile operations in the rswag specs and regenerate swagger.json | tests | 1_mvp_pilot_be | OlegShevtsov1 | L | T6, T7, T9, T10 | done |
+| T15 | Run the project and task rswag specs under bearer auth and document the 404 answers | tests | 1_mvp_pilot_be | OlegShevtsov1 | M | T11 | done |
+| T16 | Make bin/swagger_smoke check the contract with a bearer token and keep a marked legacy pass | tests | 1_mvp_pilot_be | OlegShevtsov1 | M | T5, T14, T15 | done |
 | T17 | Add client-side routing, the first shared CSS tokens and the landing page | ui | 1_mvp_pilot_fe | OlegShevtsov1 | M | — | done |
 | T18 | Add the API client, the token store with refresh, the Content-Security-Policy and GOOGLE_CLIENT_ID config | ui | 1_mvp_pilot_fe | OlegShevtsov1 | L | T17 | done |
 | T19 | Build the sign-up and sign-in screens | ui | 1_mvp_pilot_fe | OlegShevtsov1 | L | T18 | done |
@@ -28,6 +28,7 @@
 | T21 | Build the dashboard with the project list, status filter and project create, rename and delete | ui | 1_mvp_pilot_fe | OlegShevtsov1 | L | T18 | done |
 | T22 | Add task create and status change, the guided empty state and sign-out | ui | 1_mvp_pilot_fe | OlegShevtsov1 | L | T21 | done |
 | T23 | Give the landing page a stylish visual design (design tokens, theme, hero) | ui | 1_mvp_pilot_fe | OlegShevtsov1 | M | T17 | done |
-| T24 | Give the dashboard a stylish visual design on the T23 tokens | ui | 1_mvp_pilot_fe | OlegShevtsov1 | M | T22, T23 | todo |
+| T24 | Give the dashboard a stylish visual design on the T23 tokens | ui | 1_mvp_pilot_fe | OlegShevtsov1 | M | T22, T23 | done |
+| T25 | Redesign the landing page in style A (dark tech) | ui | 1_mvp_pilot_fe | OlegShevtsov1 | M | T23 | done |
 
-**Total:** 22 tasks — backend 16 tasks, about 9.75 person-days; frontend 6 tasks, about 5 person-days.
+**Total:** 25 tasks — backend 16 tasks, about 9.75 person-days; frontend 9 tasks, about 6.5 person-days.

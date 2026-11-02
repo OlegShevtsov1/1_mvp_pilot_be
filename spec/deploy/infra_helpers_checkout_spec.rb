@@ -9,6 +9,7 @@ RSpec.describe 'shared actions from a checkout of 1_mvp_infra' do
     'dev-deploy.yml' => %w[probe deploy notify],
     'kamal-deploy.yml' => %w[probe deploy release-watch notify],
     'kamal-manage.yml' => %w[probe manage notify],
+    'prod-switch.yml' => %w[prepare target data abort finalize notify],
     'release.yml' => %w[notify],
     'main-guard.yml' => %w[guard],
     'develop-guard.yml' => %w[guard]

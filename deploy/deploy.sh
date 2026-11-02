@@ -4,12 +4,15 @@
 #        deploy/deploy.sh prod vX.Y.Z           (a release tag: annotated, published, on main)
 #        deploy/deploy.sh prod vX.Y.Z <source_sha>   (on the mirror only: the image of the primary
 #                                                     commit MIRROR_SOURCE.json records for the tag)
+#        deploy/deploy.sh prod-srv vX.Y.Z [<source_sha>]   (the same release on the on-prem srv host)
 #
-# dev needs DEV_HOST, prod needs PROD_VPN_IP; both need the variables referenced in the
+# dev needs DEV_HOST, prod needs PROD_VPN_IP, prod-srv needs PROD_SRV_VPN_IP; all need the variables referenced in the
 # destination's .kamal/secrets.<dest>, an SSH agent holding a key accepted by the host, and AWS
 # credentials able to pull from ECR (or KAMAL_REGISTRY_SERVER and KAMAL_REGISTRY_PASSWORD). The
 # image is built by the Dev Deploy workflow, never here; prod also needs crane and jq to promote
-# it (deploy/promote.sh) and to move the ECR tags prod-current/prod-previous.
+# it (deploy/promote.sh) and to move the ECR tags (deploy/_common.sh live_tag_prefixes:
+# prod-current/prod-previous follow the live prod host, prod-srv-* the srv host). PROD_ACTIVE_TARGET
+# (aws|srv) names the live prod host; unset, it is read from public DNS.
 #
 # The deploy is only complete once /health reports the new release and bin/swagger_smoke
 # passes (read-only on prod); set SKIP_SMOKE=1 to deploy without the smoke gate in an emergency.
@@ -19,12 +22,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 source deploy/_common.sh
 
 select_destination "${1:-}"
-if [[ "$DESTINATION" == 'prod' ]]; then
-  if (( $# >= 3 )); then
-    VERSION="$(resolve_mirror_release "$2" "$3")"
-  else
-    VERSION="$(resolve_release_tag "${2:-}")"
-  fi
+if is_prod; then
+  VERSION="$(resolve_prod_release "${@:2}")"
 else
   VERSION="${2:-sha-$(git rev-parse HEAD)}"
   require_version "$VERSION"
@@ -35,7 +34,7 @@ require_secrets
 
 SERVICE="$(service_name)"
 
-if [[ "$DESTINATION" == 'prod' ]]; then
+if is_prod; then
   crane_login
   promote_prod_image "$VERSION"
 fi
@@ -70,6 +69,6 @@ else
   fi
 fi
 
-if [[ "$DESTINATION" == 'prod' ]]; then
+if is_prod; then
   rotate_prod_tags "$(kamal_version "$VERSION")"
 fi
