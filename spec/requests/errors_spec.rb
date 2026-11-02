@@ -157,6 +157,62 @@ RSpec.describe 'POST /api/errors' do
     expect(response).to have_http_status(:too_many_requests)
   end
 
+  context 'when the frontend publishes the DSN with its public host' do
+    let(:allowed_dsn) { 'http://fepublic@errors.internal.test:8000/2' }
+    let(:upstream) { 'http://errors.internal.test:8000/api/2/envelope/' }
+    let(:public_dsn) { 'https://fepublic@api.example.test/2' }
+
+    it 'relays the old full DSN form to the internal GlitchTip' do
+      stub_request(:post, upstream).to_return(status: 200, body: '{}')
+
+      post_envelope
+
+      expect(response).to have_http_status(:ok)
+      expect(a_request(:post, upstream).with(body: envelope)).to have_been_made.once
+    end
+
+    it "relays the public-host form to the internal GlitchTip and never contacts the envelope's host" do
+      stub_request(:post, upstream).to_return(status: 200, body: '{"id":"x"}')
+
+      post_envelope(envelope(public_dsn))
+
+      expect(response).to have_http_status(:ok)
+      expect(response.body).to eq('{"id":"x"}')
+      expect(a_request(:post, upstream).with(body: envelope(public_dsn)) { |req|
+        req.headers['X-Sentry-Auth'].to_s.include?('sentry_key=fepublic')
+      }).to have_been_made.once
+      expect(a_request(:any, /api\.example\.test/)).not_to have_been_made
+    end
+
+    context 'when the allowed DSN carries a secret key' do
+      let(:allowed_dsn) { 'http://fepublic:allowedsecret@errors.internal.test:8000/2' }
+
+      it 'relays the public-host form without a secret' do
+        stub_request(:post, upstream).to_return(status: 200, body: '{}')
+
+        post_envelope(envelope(public_dsn))
+
+        expect(response).to have_http_status(:ok)
+        expect(a_request(:post, upstream).with(body: envelope(public_dsn))).to have_been_made.once
+        expect(a_request(:any, /api\.example\.test/)).not_to have_been_made
+      end
+    end
+
+    it 'refuses the public host with another key' do
+      post_envelope(envelope('https://other@api.example.test/2'))
+
+      expect(response).to have_http_status(:forbidden)
+      expect(a_request(:any, /.*/)).not_to have_been_made
+    end
+
+    it 'refuses the public host with another project' do
+      post_envelope(envelope('https://fepublic@api.example.test/3'))
+
+      expect(response).to have_http_status(:forbidden)
+      expect(a_request(:any, /.*/)).not_to have_been_made
+    end
+  end
+
   it 'does not exist while no frontend DSN is configured' do
     with_env('SENTRY_ALLOWED_FE_DSN' => nil) { post_envelope }
 

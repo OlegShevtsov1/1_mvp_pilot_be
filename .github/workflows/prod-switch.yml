@@ -1,0 +1,861 @@
+name: Prod Switch
+run-name: Prod Switch to ${{ inputs.to }}${{ inputs.dry_run && ' (dry run)' || '' }}
+
+# Moves prod between the AWS instance and the on-prem srv host, in either direction: to=srv or
+# to=aws, the same workflow both ways. Every step is a subcommand of deploy/prod_switch.sh; see
+# README "Prod Switch (aws <-> srv)".
+#
+# 1. prepare: over the VPN, the target must answer, run fe and get its paused service resumed; the
+#    live prod must run the release. For to=aws while the AWS instance is down, standby (after the
+#    operator approves the environment prod-dns) dispatches Project Terraform Prod with
+#    prod_target=aws-standby (instance running or re-created, records stay on srv), or prints it for
+#    the operator. target then waits for the instance and checks it again, and, when the target does
+#    not run the release, dispatches Kamal Deploy target=<to> (prod_switch_run) and watches it, off
+#    the VPN, whose lock that run needs.
+# 2. data: the target must run the release; the live prod goes into Kamal maintenance with its app
+#    stopped, a final pg_dump is restored into the target's recreated database, and the row counts
+#    of every table must match.
+# 3. prod-dns: after the operator approves the environment prod-dns, Project Terraform Prod in
+#    1_mvp_infra@env/prod is dispatched with prod_target=<to> (INFRA_PROD_DISPATCH_TOKEN), or, without
+#    that token or when the dispatch fails, the exact command and record changes are printed for the
+#    operator; then the job waits for public DNS to show the target.
+# 4. finalize: /health, the read-only smoke and fe's config.js on the public URLs, pinned to the
+#    addresses DNS now gives; prod-current/prod-previous follow the target.
+# 5. finalize: the old host's app containers are stopped, never removed. The AWS instance itself is
+#    stopped or deleted only through infra, never here.
+#
+# Rollback: nothing touches prod before data's freeze. Any failure there or a refused approval
+# before prod-dns starts runs abort, which brings the live prod back once public DNS still shows it
+# and prod-dns never began; nothing changed for users but a few minutes of maintenance. Once
+# prod-dns has started (touched=true) nothing is undone automatically: README, after DNS.
+#
+# Dual control: main only, environment prod, confirm=prod, a release tag the live prod runs, and
+# the prod-dns approval. dry_run (the default) prints every command that would touch a host, ECR,
+# DNS or infra and runs none of them.
+
+on:
+  workflow_dispatch:
+    inputs:
+      to:
+        description: Where prod moves - srv (the on-prem srv host) or aws (the AWS instance)
+        required: true
+        type: choice
+        options: [srv, aws]
+      version:
+        description: The release tag vX.Y.Z prod runs now (annotated, on main)
+        required: true
+        type: string
+      source_sha:
+        description: Mirror only (vars.MIRROR=true), required there - the 40-hex primary commit of the tag, as recorded in MIRROR_SOURCE.json; leave empty on the primary
+        required: false
+        type: string
+      confirm:
+        description: Type prod to switch
+        required: true
+        type: string
+      dry_run:
+        description: Print every action without running it (uncheck for a real switch)
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# Shared with Kamal Deploy and Kamal Manage, for the whole run: no deploy, rollback or restart
+# while prod is frozen or waiting for the DNS approval. The Kamal Deploy that target dispatches runs
+# in kamal-prod-switch instead (its prod_switch_run input).
+concurrency:
+  group: kamal-prod
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  # Public DNS is read here, outside the VPN: vpn-up resolves the VPN zones through the VPN.
+  guard:
+    name: Guard (ref, confirm, version, live host)
+    runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
+    outputs:
+      tag: ${{ steps.inputs.outputs.tag }}
+      version: ${{ steps.mirror.outputs.version || steps.tag.outputs.version }}
+      source_sha: ${{ steps.inputs.outputs.source_sha }}
+      to: ${{ steps.switch.outputs.to }}
+      from: ${{ steps.switch.outputs.from }}
+      to_destination: ${{ steps.switch.outputs.to_destination }}
+      from_destination: ${{ steps.switch.outputs.from_destination }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check the ref and the inputs
+        id: inputs
+        env:
+          REF: ${{ github.ref }}
+          ENVIRONMENT: prod
+          CONFIRM: ${{ inputs.confirm }}
+          VERSION: ${{ inputs.version }}
+          MIRROR: ${{ vars.MIRROR == 'true' }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          TARGET: ${{ inputs.to }}
+        run: deploy/prod_guard.sh deploy >> "${GITHUB_OUTPUT}"
+
+      - name: Check that the version is an annotated release tag on main
+        id: tag
+        env:
+          TAG: ${{ steps.inputs.outputs.tag }}
+        run: deploy/release_tag_check.sh "${TAG}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check the version and source_sha against MIRROR_SOURCE.json
+        id: mirror
+        if: vars.MIRROR == 'true'
+        env:
+          TAG: ${{ steps.inputs.outputs.tag }}
+          SOURCE_SHA: ${{ steps.inputs.outputs.source_sha }}
+        run: deploy/mirror_source_check.sh "${TAG}" "${SOURCE_SHA}" >> "${GITHUB_OUTPUT}"
+
+      - name: Find the live prod host (public DNS)
+        id: active
+        run: deploy/prod_active_target.sh >> "${GITHUB_OUTPUT}"
+
+      - name: Check the direction of the switch
+        id: switch
+        env:
+          TO: ${{ inputs.to }}
+          ACTIVE_TARGET: ${{ steps.active.outputs.active_target }}
+        run: deploy/prod_switch.sh guard >> "${GITHUB_OUTPUT}"
+
+  # Only names are checked and printed, never values. A switch reaches both hosts.
+  preflight:
+    name: Preflight (secrets)
+    needs: guard
+    runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
+    environment: prod
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check that every required secret is set
+        env:
+          AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+          VPN_CI_OVPN: ${{ secrets.VPN_CI_OVPN }}
+          PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+          PROD_VPN_IP: ${{ secrets.PROD_VPN_IP }}
+          PROD_SRV_SSH_KEY: ${{ secrets.PROD_SRV_SSH_KEY }}
+          PROD_SRV_VPN_IP: ${{ secrets.PROD_SRV_VPN_IP }}
+          INFRA_READ_TOKEN: ${{ secrets.INFRA_READ_TOKEN }}
+          SECRET_KEY_BASE: ${{ secrets.SECRET_KEY_BASE }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          SENTRY_ALLOWED_FE_DSN: ${{ secrets.SENTRY_ALLOWED_FE_DSN }}
+          SMOKE_TOKEN: ${{ secrets.SMOKE_TOKEN }}
+          TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN }}
+          TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID }}
+          TELEGRAM_PILOT_PROD_ALERTS_THREAD_ID: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_THREAD_ID }}
+        run: |
+          source deploy/_common.sh
+          # PROJECT_NAME comes from config/project.env and KAMAL_REGISTRY_PASSWORD from the ECR
+          # login; every other variable .kamal/secrets.prod reads is a secret.
+          mapfile -t kamal_secrets < <(secret_names .kamal/secrets.prod | grep -vxE 'PROJECT_NAME|KAMAL_REGISTRY_PASSWORD')
+          required=(
+            AWS_ROLE_ARN VPN_CI_OVPN PROD_SSH_KEY PROD_VPN_IP PROD_SRV_SSH_KEY PROD_SRV_VPN_IP INFRA_READ_TOKEN
+            "${kamal_secrets[@]}"
+            TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID TELEGRAM_PILOT_PROD_ALERTS_THREAD_ID
+          )
+          missing=()
+          for name in "${required[@]}"; do
+            [[ -n "${!name}" ]] || missing+=("${name}")
+          done
+          if (( ${#missing[@]} > 0 )); then
+            echo "::error::${GITHUB_WORKFLOW} cannot start, missing secrets: ${missing[*]} (see README \"Prod Switch\")"
+            exit 1
+          fi
+          echo "all required secrets are set: ${required[*]}"
+
+  # Step 1, nothing touched: what the target needs (standby, live, deploy), the paused service
+  # resumed. Read-only on the live prod.
+  prepare:
+    name: Check the target
+    needs: [guard, preflight]
+    runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
+    environment: prod
+    timeout-minutes: 20
+    outputs:
+      steps: ${{ steps.steps.outputs.steps }}
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      TAG: ${{ needs.guard.outputs.tag }}
+      VERSION: ${{ needs.guard.outputs.version }}
+      SOURCE_SHA: ${{ needs.guard.outputs.source_sha }}
+      TO: ${{ needs.guard.outputs.to }}
+      TO_DESTINATION: ${{ needs.guard.outputs.to_destination }}
+      FROM_DESTINATION: ${{ needs.guard.outputs.from_destination }}
+      PROD_ACTIVE_TARGET: ${{ needs.guard.outputs.from }}
+      DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+      PROD_VPN_IP: ${{ secrets.PROD_VPN_IP }}
+      PROD_SRV_VPN_IP: ${{ secrets.PROD_SRV_VPN_IP }}
+      SECRET_KEY_BASE: ${{ secrets.SECRET_KEY_BASE }}
+      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+      SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+      SENTRY_ALLOWED_FE_DSN: ${{ secrets.SENTRY_ALLOWED_FE_DSN }}
+      SMOKE_TOKEN: ${{ secrets.SMOKE_TOKEN }}
+      GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+      OAUTH_CLIENT_ID: ${{ vars.OAUTH_CLIENT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check out the shared actions from 1_mvp_infra@env/dev
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/1_mvp_infra
+          ref: env/dev
+          path: infra-helpers
+          token: ${{ secrets.INFRA_READ_TOKEN }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions
+            scripts
+            host
+            projects
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          bundler-cache: true
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        if: ${{ !inputs.dry_run }}
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Load both prod SSH keys into an agent (never written to disk)
+        if: ${{ !inputs.dry_run }}
+        env:
+          PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+          PROD_SRV_SSH_KEY: ${{ secrets.PROD_SRV_SSH_KEY }}
+        run: |
+          eval "$(ssh-agent -a "${RUNNER_TEMP}/ssh-agent.sock")" > /dev/null
+          ssh-add - <<< "${PROD_SSH_KEY}"
+          ssh-add - <<< "${PROD_SRV_SSH_KEY}"
+          echo "SSH_AUTH_SOCK=${SSH_AUTH_SOCK}" >> "${GITHUB_ENV}"
+
+      - name: VPN up
+        if: ${{ !inputs.dry_run }}
+        uses: ./infra-helpers/.github/actions/vpn-up
+        with:
+          ovpn: ${{ secrets.VPN_CI_OVPN }}
+          ci-vpn-ip: ${{ secrets.CI_VPN_IP }}
+          dev-host: ${{ secrets.DEV_HOST }}
+          dns-zones: ${{ vars.DNS_ZONES }}
+
+      - name: Check the target and resume its paused service
+        id: steps
+        run: deploy/prod_switch.sh prepare "${TO_DESTINATION}" "${TAG}" ${SOURCE_SHA:+"${SOURCE_SHA}"}
+
+      - name: VPN down
+        if: ${{ always() && !inputs.dry_run }}
+        continue-on-error: true
+        uses: ./infra-helpers/.github/actions/vpn-down
+
+      # GitHub also notifies the prod-dns reviewers, so a failed message does not hide the approval.
+      - name: Ask for the prod-dns approval of the AWS standby (Telegram)
+        if: ${{ steps.steps.outputs.steps == 'standby' }}
+        continue-on-error: true
+        uses: ./infra-helpers/.github/actions/notify-telegram
+        env:
+          TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN }}
+          TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID }}
+          TELEGRAM_PILOT_PROD_ALERTS_THREAD_ID: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_THREAD_ID }}
+        with:
+          topic: PILOT_PROD_ALERTS
+          message: ${{ format('⏸ Prod Switch {0} -> aws {1}{2} - the AWS instance does not answer; prod and DNS stay on {0}. Approve prod-dns to start it through infra (prod_target=aws-standby, records stay on {0}) {3}/{4}/actions/runs/{5}', needs.guard.outputs.from, needs.guard.outputs.tag, inputs.dry_run && ' (dry run)' || '', github.server_url, github.repository, github.run_id) }}
+
+  # Step 1 for to=aws while the AWS instance is down. The prod-dns approval is the operator's OK for
+  # the infra apply; DNS does not move.
+  standby:
+    name: Start the AWS standby (operator approval)
+    needs: [guard, prepare]
+    if: ${{ needs.prepare.outputs.steps == 'standby' }}
+    runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
+    environment: prod-dns
+    timeout-minutes: 60
+    outputs:
+      dispatched: ${{ steps.standby.outputs.dispatched }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start the AWS instance through the infra prod stack
+        id: standby
+        env:
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+          GH_TOKEN: ${{ secrets.INFRA_PROD_DISPATCH_TOKEN }}
+          INFRA_PROD_REPO: ${{ vars.INFRA_PROD_REPO || format('{0}/1_mvp_infra', github.repository_owner) }}
+        run: deploy/prod_switch.sh standby
+
+  # Step 1, nothing touched: after a standby, wait for the AWS instance and check it again; then
+  # deploy the release on the target through Kamal Deploy, off the VPN, whose lock that run needs.
+  # !cancelled(), not always(): a cancelled run never goes on to the freeze.
+  target:
+    name: Bring the target to the release
+    needs: [guard, prepare, standby]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && (needs.standby.result == 'success' || needs.standby.result == 'skipped') }}
+    runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
+    environment: prod
+    timeout-minutes: 90
+    permissions:
+      actions: write
+      contents: read
+      id-token: write
+    env:
+      TAG: ${{ needs.guard.outputs.tag }}
+      VERSION: ${{ needs.guard.outputs.version }}
+      SOURCE_SHA: ${{ needs.guard.outputs.source_sha }}
+      TO: ${{ needs.guard.outputs.to }}
+      TO_DESTINATION: ${{ needs.guard.outputs.to_destination }}
+      FROM_DESTINATION: ${{ needs.guard.outputs.from_destination }}
+      PROD_ACTIVE_TARGET: ${{ needs.guard.outputs.from }}
+      DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+      PROD_VPN_IP: ${{ secrets.PROD_VPN_IP }}
+      PROD_SRV_VPN_IP: ${{ secrets.PROD_SRV_VPN_IP }}
+      SECRET_KEY_BASE: ${{ secrets.SECRET_KEY_BASE }}
+      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+      SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+      SENTRY_ALLOWED_FE_DSN: ${{ secrets.SENTRY_ALLOWED_FE_DSN }}
+      SMOKE_TOKEN: ${{ secrets.SMOKE_TOKEN }}
+      GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+      OAUTH_CLIENT_ID: ${{ vars.OAUTH_CLIENT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check out the shared actions from 1_mvp_infra@env/dev
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/1_mvp_infra
+          ref: env/dev
+          path: infra-helpers
+          token: ${{ secrets.INFRA_READ_TOKEN }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions
+            scripts
+            host
+            projects
+
+      - uses: ruby/setup-ruby@v1
+        if: ${{ needs.prepare.outputs.steps == 'standby' }}
+        with:
+          bundler-cache: true
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        if: ${{ !inputs.dry_run && needs.prepare.outputs.steps == 'standby' }}
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Load both prod SSH keys into an agent (never written to disk)
+        if: ${{ !inputs.dry_run && needs.prepare.outputs.steps == 'standby' }}
+        env:
+          PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+          PROD_SRV_SSH_KEY: ${{ secrets.PROD_SRV_SSH_KEY }}
+        run: |
+          eval "$(ssh-agent -a "${RUNNER_TEMP}/ssh-agent.sock")" > /dev/null
+          ssh-add - <<< "${PROD_SSH_KEY}"
+          ssh-add - <<< "${PROD_SRV_SSH_KEY}"
+          echo "SSH_AUTH_SOCK=${SSH_AUTH_SOCK}" >> "${GITHUB_ENV}"
+
+      - name: VPN up
+        if: ${{ !inputs.dry_run && needs.prepare.outputs.steps == 'standby' }}
+        uses: ./infra-helpers/.github/actions/vpn-up
+        with:
+          ovpn: ${{ secrets.VPN_CI_OVPN }}
+          ci-vpn-ip: ${{ secrets.CI_VPN_IP }}
+          dev-host: ${{ secrets.DEV_HOST }}
+          dns-zones: ${{ vars.DNS_ZONES }}
+
+      - name: Wait for the AWS instance
+        if: ${{ needs.prepare.outputs.steps == 'standby' }}
+        run: deploy/prod_switch.sh wait-host prod "${STANDBY_WAIT_MINUTES:-20}"
+
+      - name: Check the AWS instance again
+        id: reprobe
+        if: ${{ needs.prepare.outputs.steps == 'standby' }}
+        env:
+          AFTER_STANDBY: '1'
+        run: deploy/prod_switch.sh prepare "${TO_DESTINATION}" "${TAG}" ${SOURCE_SHA:+"${SOURCE_SHA}"}
+
+      - name: VPN down
+        if: ${{ always() && !inputs.dry_run && needs.prepare.outputs.steps == 'standby' }}
+        continue-on-error: true
+        uses: ./infra-helpers/.github/actions/vpn-down
+
+      - name: Deploy the release on the target (Kamal Deploy)
+        if: ${{ contains(needs.prepare.outputs.steps, 'deploy') || (needs.prepare.outputs.steps == 'standby' && contains(steps.reprobe.outputs.steps, 'deploy')) }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: deploy/prod_switch.sh deploy-target "${TO}" "${TAG}" ${SOURCE_SHA:+"${SOURCE_SHA}"}
+
+  # Step 2. A failure or cancellation once the freeze has started brings the live prod back.
+  # Nothing after the abort step may fail the job: abort no longer runs then, and prod-dns never would.
+  data:
+    name: Freeze prod, move the data
+    needs: [guard, preflight, target]
+    if: ${{ !cancelled() && needs.target.result == 'success' }}
+    runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
+    environment: prod
+    timeout-minutes: 60
+    outputs:
+      freeze: ${{ steps.freeze.outcome }}
+      abort: ${{ steps.abort.outcome }}
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      TAG: ${{ needs.guard.outputs.tag }}
+      VERSION: ${{ needs.guard.outputs.version }}
+      SOURCE_SHA: ${{ needs.guard.outputs.source_sha }}
+      TO_DESTINATION: ${{ needs.guard.outputs.to_destination }}
+      FROM_DESTINATION: ${{ needs.guard.outputs.from_destination }}
+      PROD_ACTIVE_TARGET: ${{ needs.guard.outputs.from }}
+      DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+      PROD_VPN_IP: ${{ secrets.PROD_VPN_IP }}
+      PROD_SRV_VPN_IP: ${{ secrets.PROD_SRV_VPN_IP }}
+      SECRET_KEY_BASE: ${{ secrets.SECRET_KEY_BASE }}
+      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+      SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+      SENTRY_ALLOWED_FE_DSN: ${{ secrets.SENTRY_ALLOWED_FE_DSN }}
+      SMOKE_TOKEN: ${{ secrets.SMOKE_TOKEN }}
+      GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+      OAUTH_CLIENT_ID: ${{ vars.OAUTH_CLIENT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check out the shared actions from 1_mvp_infra@env/dev
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/1_mvp_infra
+          ref: env/dev
+          path: infra-helpers
+          token: ${{ secrets.INFRA_READ_TOKEN }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions
+            scripts
+            host
+            projects
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          bundler-cache: true
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        if: ${{ !inputs.dry_run }}
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Load both prod SSH keys into an agent (never written to disk)
+        if: ${{ !inputs.dry_run }}
+        env:
+          PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+          PROD_SRV_SSH_KEY: ${{ secrets.PROD_SRV_SSH_KEY }}
+        run: |
+          eval "$(ssh-agent -a "${RUNNER_TEMP}/ssh-agent.sock")" > /dev/null
+          ssh-add - <<< "${PROD_SSH_KEY}"
+          ssh-add - <<< "${PROD_SRV_SSH_KEY}"
+          echo "SSH_AUTH_SOCK=${SSH_AUTH_SOCK}" >> "${GITHUB_ENV}"
+
+      - name: VPN up
+        if: ${{ !inputs.dry_run }}
+        uses: ./infra-helpers/.github/actions/vpn-up
+        with:
+          ovpn: ${{ secrets.VPN_CI_OVPN }}
+          ci-vpn-ip: ${{ secrets.CI_VPN_IP }}
+          dev-host: ${{ secrets.DEV_HOST }}
+          dns-zones: ${{ vars.DNS_ZONES }}
+
+      - name: Check that the target runs the release
+        env:
+          REQUIRE_READY: '1'
+        run: deploy/prod_switch.sh prepare "${TO_DESTINATION}" "${TAG}" ${SOURCE_SHA:+"${SOURCE_SHA}"}
+
+      - name: Freeze the live prod
+        id: freeze
+        run: deploy/prod_switch.sh freeze "${FROM_DESTINATION}"
+
+      - name: Move the database
+        run: deploy/prod_switch.sh move-data "${FROM_DESTINATION}" "${TO_DESTINATION}" "${VERSION}"
+
+      - name: Abort, bring the live prod back
+        id: abort
+        if: ${{ (failure() || cancelled()) && steps.freeze.outcome != 'skipped' }}
+        run: deploy/prod_switch.sh abort "${FROM_DESTINATION}" "${VERSION}"
+
+      - name: VPN down
+        if: ${{ always() && !inputs.dry_run }}
+        continue-on-error: true
+        uses: ./infra-helpers/.github/actions/vpn-down
+
+      # GitHub also notifies the prod-dns reviewers, so a failed message does not hide the approval.
+      - name: Ask for the prod-dns approval (Telegram)
+        continue-on-error: true
+        uses: ./infra-helpers/.github/actions/notify-telegram
+        env:
+          TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN }}
+          TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID }}
+          TELEGRAM_PILOT_PROD_ALERTS_THREAD_ID: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_THREAD_ID }}
+        with:
+          topic: PILOT_PROD_ALERTS
+          message: ${{ format('⏸ Prod Switch {0} -> {1} {2}{3} - the data is on {1} and every row count matches, prod is in maintenance until DNS moves. Approve prod-dns {4}/{5}/actions/runs/{6}', needs.guard.outputs.from, needs.guard.outputs.to, needs.guard.outputs.tag, inputs.dry_run && ' (dry run)' || '', github.server_url, github.repository, github.run_id) }}
+
+  # Step 3. The environment prod-dns has the operator as required reviewer: the approval is the
+  # operator's OK. touched=true is set before anything else, so abort never runs once DNS may move.
+  prod-dns:
+    name: Switch DNS (operator approval)
+    needs: [guard, data]
+    runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
+    environment: prod-dns
+    timeout-minutes: 90
+    outputs:
+      touched: ${{ steps.touched.outputs.touched }}
+    steps:
+      - name: Mark that DNS may move from here on
+        id: touched
+        run: echo "touched=true" >> "${GITHUB_OUTPUT}"
+
+      - uses: actions/checkout@v4
+
+      - name: Switch DNS through the infra prod stack
+        env:
+          TO: ${{ needs.guard.outputs.to }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+          GH_TOKEN: ${{ secrets.INFRA_PROD_DISPATCH_TOKEN }}
+          INFRA_PROD_REPO: ${{ vars.INFRA_PROD_REPO || format('{0}/1_mvp_infra', github.repository_owner) }}
+        run: deploy/prod_switch.sh dns "${TO}"
+
+  # Before DNS only: the approval was refused or never came, or prod-dns was cancelled before it began.
+  # touched is not set when prod-dns is cancelled mid-step, so abort-check reads public DNS and the
+  # jobs API before anything is touched; it fails closed, leaving prod in maintenance.
+  abort:
+    name: Abort (bring the live prod back)
+    needs: [guard, data, prod-dns]
+    if: ${{ always() && needs.data.result == 'success' && needs.prod-dns.result != 'success' && needs.prod-dns.outputs.touched != 'true' }}
+    runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
+    environment: prod
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      id-token: write
+      contents: read
+    env:
+      VERSION: ${{ needs.guard.outputs.version }}
+      FROM_DESTINATION: ${{ needs.guard.outputs.from_destination }}
+      PROD_ACTIVE_TARGET: ${{ needs.guard.outputs.from }}
+      DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+      PROD_VPN_IP: ${{ secrets.PROD_VPN_IP }}
+      PROD_SRV_VPN_IP: ${{ secrets.PROD_SRV_VPN_IP }}
+      SECRET_KEY_BASE: ${{ secrets.SECRET_KEY_BASE }}
+      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+      SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+      SENTRY_ALLOWED_FE_DSN: ${{ secrets.SENTRY_ALLOWED_FE_DSN }}
+      SMOKE_TOKEN: ${{ secrets.SMOKE_TOKEN }}
+      GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+      OAUTH_CLIENT_ID: ${{ vars.OAUTH_CLIENT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out the shared actions from 1_mvp_infra@env/dev
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/1_mvp_infra
+          ref: env/dev
+          path: infra-helpers
+          token: ${{ secrets.INFRA_READ_TOKEN }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions
+            scripts
+            host
+            projects
+
+      - name: Check that DNS was never touched
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: deploy/prod_switch.sh abort-check "${FROM_DESTINATION}"
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          bundler-cache: true
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        if: ${{ !inputs.dry_run }}
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Load both prod SSH keys into an agent (never written to disk)
+        if: ${{ !inputs.dry_run }}
+        env:
+          PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+          PROD_SRV_SSH_KEY: ${{ secrets.PROD_SRV_SSH_KEY }}
+        run: |
+          eval "$(ssh-agent -a "${RUNNER_TEMP}/ssh-agent.sock")" > /dev/null
+          ssh-add - <<< "${PROD_SSH_KEY}"
+          ssh-add - <<< "${PROD_SRV_SSH_KEY}"
+          echo "SSH_AUTH_SOCK=${SSH_AUTH_SOCK}" >> "${GITHUB_ENV}"
+
+      - name: VPN up
+        if: ${{ !inputs.dry_run }}
+        uses: ./infra-helpers/.github/actions/vpn-up
+        with:
+          ovpn: ${{ secrets.VPN_CI_OVPN }}
+          ci-vpn-ip: ${{ secrets.CI_VPN_IP }}
+          dev-host: ${{ secrets.DEV_HOST }}
+          dns-zones: ${{ vars.DNS_ZONES }}
+
+      - name: Bring the live prod back
+        run: deploy/prod_switch.sh abort "${FROM_DESTINATION}" "${VERSION}"
+
+      - name: VPN down
+        if: ${{ always() && !inputs.dry_run }}
+        uses: ./infra-helpers/.github/actions/vpn-down
+
+  # Steps 4 and 5. The public checks run before vpn-up, which would answer the zone from the VPN's DNS.
+  finalize:
+    name: Check the public URLs, move the tags, stop the old host
+    needs: [guard, prod-dns]
+    runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
+    environment: prod
+    timeout-minutes: 40
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      VERSION: ${{ needs.guard.outputs.version }}
+      TO_DESTINATION: ${{ needs.guard.outputs.to_destination }}
+      FROM_DESTINATION: ${{ needs.guard.outputs.from_destination }}
+      PROD_ACTIVE_TARGET: ${{ needs.guard.outputs.to }}
+      DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+      PROD_VPN_IP: ${{ secrets.PROD_VPN_IP }}
+      PROD_SRV_VPN_IP: ${{ secrets.PROD_SRV_VPN_IP }}
+      SECRET_KEY_BASE: ${{ secrets.SECRET_KEY_BASE }}
+      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+      SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+      SENTRY_ALLOWED_FE_DSN: ${{ secrets.SENTRY_ALLOWED_FE_DSN }}
+      SMOKE_TOKEN: ${{ secrets.SMOKE_TOKEN }}
+      GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+      OAUTH_CLIENT_ID: ${{ vars.OAUTH_CLIENT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out the shared actions from 1_mvp_infra@env/dev
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/1_mvp_infra
+          ref: env/dev
+          path: infra-helpers
+          token: ${{ secrets.INFRA_READ_TOKEN }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions
+            scripts
+            host
+            projects
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          bundler-cache: true
+
+      - name: Install crane
+        if: ${{ !inputs.dry_run }}
+        env:
+          CRANE_VERSION: 0.22.1
+          CRANE_SHA256: 0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0
+        run: |
+          curl -sSfL -o "${RUNNER_TEMP}/crane.tgz" "https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz"
+          echo "${CRANE_SHA256}  ${RUNNER_TEMP}/crane.tgz" | sha256sum -c -
+          mkdir -p "${RUNNER_TEMP}/bin"
+          tar -xzf "${RUNNER_TEMP}/crane.tgz" -C "${RUNNER_TEMP}/bin" crane
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        if: ${{ !inputs.dry_run }}
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Check the public URLs and move prod-current
+        run: deploy/prod_switch.sh finalize-public "${TO_DESTINATION}" "${VERSION}"
+
+      - name: Load both prod SSH keys into an agent (never written to disk)
+        if: ${{ !inputs.dry_run }}
+        env:
+          PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+          PROD_SRV_SSH_KEY: ${{ secrets.PROD_SRV_SSH_KEY }}
+        run: |
+          eval "$(ssh-agent -a "${RUNNER_TEMP}/ssh-agent.sock")" > /dev/null
+          ssh-add - <<< "${PROD_SSH_KEY}"
+          ssh-add - <<< "${PROD_SRV_SSH_KEY}"
+          echo "SSH_AUTH_SOCK=${SSH_AUTH_SOCK}" >> "${GITHUB_ENV}"
+
+      - name: VPN up
+        if: ${{ !inputs.dry_run }}
+        uses: ./infra-helpers/.github/actions/vpn-up
+        with:
+          ovpn: ${{ secrets.VPN_CI_OVPN }}
+          ci-vpn-ip: ${{ secrets.CI_VPN_IP }}
+          dev-host: ${{ secrets.DEV_HOST }}
+          dns-zones: ${{ vars.DNS_ZONES }}
+
+      - name: Stop the old host's app containers
+        run: deploy/prod_switch.sh stop-old "${FROM_DESTINATION}"
+
+      - name: VPN down
+        if: ${{ always() && !inputs.dry_run }}
+        uses: ./infra-helpers/.github/actions/vpn-down
+
+  report:
+    name: Report
+    needs: [guard, preflight, prepare, standby, target, data, prod-dns, abort, finalize]
+    if: always()
+    runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
+    outputs:
+      message: ${{ steps.summarize.outputs.message }}
+    steps:
+      - name: Summarize the job results
+        id: summarize
+        env:
+          VERSION: ${{ needs.guard.outputs.tag || inputs.version }}
+          FROM: ${{ needs.guard.outputs.from || 'the live host' }}
+          TO: ${{ inputs.to }}
+          DRY: ${{ inputs.dry_run && ' (dry run)' || '' }}
+          TOUCHED: ${{ needs.prod-dns.outputs.touched }}
+          GUARD: ${{ needs.guard.result }}
+          PREFLIGHT: ${{ needs.preflight.result }}
+          PREPARE: ${{ needs.prepare.result }}
+          STANDBY: ${{ needs.standby.result }}
+          DISPATCHED: ${{ needs.standby.outputs.dispatched }}
+          TARGET: ${{ needs.target.result }}
+          DATA: ${{ needs.data.result }}
+          FREEZE: ${{ needs.data.outputs.freeze }}
+          DATA_ABORT: ${{ needs.data.outputs.abort }}
+          PROD_DNS: ${{ needs.prod-dns.result }}
+          ABORT: ${{ needs.abort.result }}
+          FINALIZE: ${{ needs.finalize.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          explain() {
+            case "$1" in
+              guard) echo 'refused: the ref is not main, confirm is not prod, the version is not an annotated release tag on main, public DNS is mid-change, or prod already runs there; nothing touched prod' ;;
+              preflight) echo 'required secrets are missing: see the preflight error for their names and README "Prod Switch"' ;;
+              prepare) echo 'the target check failed (see its error); nothing touched prod, DNS was not touched' ;;
+              standby) echo "the AWS standby failed or its approval was refused: the AWS instance may be running now; prod and DNS stayed on ${FROM}" ;;
+              target)
+                if [[ "${STANDBY}" == 'success' && "${DISPATCHED}" != 'yes' ]]; then
+                  echo "the AWS instance did not come up or its deploy failed: apply prod_target=aws-standby through infra as the standby job printed, then run Prod Switch again; nothing touched prod, DNS stayed on ${FROM}"
+                else
+                  echo "the target did not come up or its deploy (Kamal Deploy) failed; nothing touched prod, DNS stayed on ${FROM}"
+                fi
+                ;;
+              data)
+                if [[ "${FREEZE}" == 'skipped' ]]; then
+                  echo 'the target does not run the release (checked before the freeze); nothing touched prod, DNS was not touched'
+                elif [[ "${DATA_ABORT}" == 'success' ]]; then
+                  echo "the freeze or the data move failed; the abort step brought ${FROM} back, DNS was not touched"
+                else
+                  echo "the freeze or the data move failed and the abort did not succeed: prod on ${FROM} may still be in maintenance; run deploy/prod_switch.sh abort from a console (README \"Prod Switch\"), DNS was not touched"
+                fi
+                ;;
+              prod-dns)
+                if [[ "${TOUCHED}" == 'true' ]]; then
+                  echo 'DNS may have moved: follow README "Prod Switch", after DNS'
+                else
+                  echo "the DNS approval was refused or never came: aborted, prod stays on ${FROM}"
+                fi
+                ;;
+              abort) echo "the abort failed or its check refused it (DNS may have moved): prod stays in maintenance on ${FROM}; follow README \"Prod Switch\", after DNS" ;;
+              finalize) echo 'DNS moved, but a public check, the tag move or the stop of the old host failed: follow README "Prod Switch", after DNS' ;;
+            esac
+          }
+          jobs=(guard preflight prepare standby target data abort prod-dns finalize)
+          results=("${GUARD}" "${PREFLIGHT}" "${PREPARE}" "${STANDBY}" "${TARGET}" "${DATA}" "${ABORT}" "${PROD_DNS}" "${FINALIZE}")
+          {
+            echo '| job | result |'
+            echo '| --- | --- |'
+            for i in "${!jobs[@]}"; do
+              echo "| ${jobs[i]} | ${results[i]} |"
+            done
+          } >> "${GITHUB_STEP_SUMMARY}"
+          failed=''
+          for i in "${!jobs[@]}"; do
+            if [[ "${results[i]}" == 'failure' || "${results[i]}" == 'cancelled' ]]; then
+              failed="${jobs[i]}"
+              break
+            fi
+          done
+          if [[ -n "${failed}" ]]; then
+            message="❌ Prod Switch ${FROM} -> ${TO} ${VERSION:0:16}${DRY} failed in ${failed}: $(explain "${failed}") ${RUN_URL}"
+            echo "::error::${failed} failed: $(explain "${failed}")"
+          else
+            message="✅ Prod Switch ${FROM} -> ${TO} ${VERSION:0:16}${DRY} done: prod runs on ${TO} ${RUN_URL}"
+          fi
+          echo "message=${message}" >> "${GITHUB_OUTPUT}"
+          echo "FAILED_JOB=${failed}" >> "${GITHUB_ENV}"
+
+      - name: Fail when a job failed
+        if: env.FAILED_JOB != ''
+        run: exit 1
+
+  notify:
+    name: Notify (Telegram)
+    needs: [report]
+    if: always()
+    runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
+    environment: prod
+    steps:
+      - name: Check out the shared actions from 1_mvp_infra@env/dev
+        id: infra
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/1_mvp_infra
+          ref: env/dev
+          path: infra-helpers
+          token: ${{ secrets.INFRA_READ_TOKEN }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions
+            scripts
+            host
+            projects
+
+      - uses: ./infra-helpers/.github/actions/notify-telegram
+        env:
+          TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN }}
+          TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID }}
+          TELEGRAM_PILOT_PROD_ALERTS_THREAD_ID: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_THREAD_ID }}
+        with:
+          topic: PILOT_PROD_ALERTS
+          message: ${{ needs.report.outputs.message || format('❌ Prod Switch could not report its result {0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+
+      - name: Send the message without the shared actions
+        if: "!cancelled() && steps.infra.outcome == 'failure'"
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_CHAT_ID }}
+          THREAD_ID: ${{ secrets.TELEGRAM_PILOT_PROD_ALERTS_THREAD_ID }}
+          MESSAGE: ${{ needs.report.outputs.message || format('❌ Prod Switch could not report its result {0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+        run: |
+          echo "::error::the shared actions could not be checked out from ${GITHUB_REPOSITORY_OWNER}/1_mvp_infra@env/dev: INFRA_READ_TOKEN is missing, expired or cannot read that repository; sending the message straight to Telegram"
+          args=(--data-urlencode "chat_id=${CHAT_ID}" --data-urlencode "text=${MESSAGE}")
+          [[ -z "${THREAD_ID}" ]] || args+=(--data-urlencode "message_thread_id=${THREAD_ID}")
+          curl -sS -m 20 --fail -o /dev/null -K - "${args[@]}" <<< "url = \"https://api.telegram.org/bot${BOT_TOKEN}/sendMessage\""
+          exit 1

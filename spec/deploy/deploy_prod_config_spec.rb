@@ -36,6 +36,17 @@ RSpec.describe 'config/deploy.yml' do
     expect(proxy.deploy_options[:'forward-headers']).not_to be(true)
   end
 
+  it 'runs the daily purge in a cron role from the same image, without the proxy' do
+    cron = config.role(:cron)
+
+    expect(config.roles.map(&:name)).to contain_exactly('web', 'cron')
+    expect(cron.hosts).to eq([ '192.0.2.70' ])
+    expect(cron.cmd).to eq('bin/purge-scheduler')
+    expect(cron.running_proxy?).to be(false)
+    expect(cron.env('192.0.2.70').secret_keys).to include('SENTRY_DSN')
+    expect(config.role(:web).cmd).to be_nil
+  end
+
   it 'forces SSL and reports to the prod environment with the prod secrets' do
     expect(config.env.clear).to include('RAILS_FORCE_SSL' => 'true', 'SENTRY_ENVIRONMENT' => 'prod')
     expect(config.env.secret_keys).to contain_exactly('SECRET_KEY_BASE', 'DATABASE_URL', 'SENTRY_DSN', 'SENTRY_ALLOWED_FE_DSN', 'SMOKE_TOKEN')
@@ -71,7 +82,7 @@ RSpec.describe 'config/deploy.yml' do
     expect(Rails.root.join('config/deploy.yml').read).not_to match(/traefik/i)
   end
 
-  it 'is the only config besides config/deploy.dev.yml: no destination overlays' do
-    expect(Dir.glob('config/deploy.*.yml', base: Rails.root.to_s)).to eq([ 'config/deploy.dev.yml' ])
+  it 'has only the self-contained dev and srv configs beside it: no destination overlays' do
+    expect(Dir.glob('config/deploy.*.yml', base: Rails.root.to_s)).to contain_exactly('config/deploy.dev.yml', 'config/deploy.prod-srv.yml')
   end
 end

@@ -1,0 +1,45 @@
+{
+  "history": [
+    {
+      "at": "2026-10-28T11:17:08Z",
+      "evidence": "feature-start:6ae1d92805529c9d81ab35e5",
+      "stage": "idea"
+    },
+    {
+      "at": "2026-10-28T12:05:55Z",
+      "evidence": "sdlc-gate:prd:bbc72ec",
+      "stage": "prd"
+    },
+    {
+      "at": "2026-10-28T13:40:50Z",
+      "evidence": "sdlc-gate:architecture:87b62b0",
+      "stage": "architecture"
+    },
+    {
+      "at": "2026-10-28T16:56:33Z",
+      "evidence": "sdlc-gate:contracts:b6943a9",
+      "stage": "contracts"
+    },
+    {
+      "at": "2026-10-28T17:24:46Z",
+      "evidence": "sdlc-gate:tasks:e189f0f",
+      "stage": "tasks"
+    },
+    {
+      "at": "2026-10-29T22:54:15Z",
+      "evidence": "sdlc-gate:ship:bc46dc6",
+      "stage": "review"
+    },
+    {
+      "at": "2026-10-30T00:32:07Z",
+      "evidence": "release:OlegShevtsov1/1_mvp_pilot_fe@v0.4.0:7fe5ab90504f6d004c6b81bcc342d981e1ba0b3f",
+      "stage": "shipped"
+    }
+  ],
+  "schema_version": 1,
+  "slug": "redesign",
+  "stage": "shipped",
+  "trello_card_id": "6ae1d92805529c9d81ab35e5",
+  "trello_card_id_short": 368,
+  "trello_card_title": "redesign: \u041d\u043e\u0432\u0438\u0439 \u0434\u0438\u0437\u0430\u0439\u043d \u043b\u0435\u043d\u0434\u0456\u043d\u0433\u0443 \u0442\u0430 \u043a\u0430\u0431\u0456\u043d\u0435\u0442\u0443"
+}

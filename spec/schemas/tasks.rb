@@ -6,7 +6,7 @@ module Schemas
         id: { type: :integer },
         name: { type: :string },
         description: { type: :string },
-        status: { type: :string, enum: %w[not_started in_progress completed] },
+        status: { type: :string, enum: Task::STATUSES },
         project_id: { type: :integer }
       },
       required: %w[id name description status]
@@ -20,9 +20,8 @@ module Schemas
           properties: {
             name: { type: :string },
             description: { type: :string },
-            status: { type: :string, enum: %w[not_started in_progress completed] }
-          },
-          required: %w[name description status]
+            status: { type: :string, enum: Task::STATUSES }
+          }
         }
       },
       required: %w[task]

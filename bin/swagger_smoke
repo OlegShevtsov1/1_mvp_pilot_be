@@ -6,6 +6,10 @@
 # adds X-Forwarded-Proto, e.g. https for an app that forces SSL behind a TLS terminator.
 # SMOKE_READ_ONLY=1 sends only GET requests and creates nothing: for prod, where the users the
 # full run signs up could never be deleted.
+# OAUTH_CLIENT_ID (the public web client) makes the server issue an access token on sign-up; the authenticated
+# checks then run with it as a bearer token, and without it with the legacy headers. SMOKE_TOKEN marks the smoke's
+# requests as pipeline calls, which the server never counts as legacy uses; the legacy pass runs only with it and
+# while LEGACY_AUTH_ENABLED is not off (same values and default as the server's).
 set -uo pipefail
 
 BASE="${1:-}"
@@ -67,6 +71,9 @@ EMAIL_A="smoke-a-$STAMP@example.com"
 EMAIL_B="smoke-b-$STAMP@example.com"
 PASSWORD='password123'
 DESC='A description that is at least twenty characters long'
+PROJECT_BODY="{\"project\":{\"name\":\"Smoke Proj\",\"description\":\"$DESC\"}}"
+PROJECT_UPDATE_BODY="{\"project\":{\"name\":\"Smoke Proj 2\",\"description\":\"$DESC\"}}"
+TASK_BODY='{"task":{"name":"Smoke Task","description":"Smoke task description","status":"not_started"}}'
 
 # --- health ---------------------------------------------------------------
 check 'health endpoint' 200 GET /health
@@ -81,27 +88,70 @@ if [[ "${SMOKE_READ_ONLY:-}" == '1' ]]; then
 fi
 
 # --- sign up --------------------------------------------------------------
-# Presenting SMOKE_TOKEN exempts the smoke's sign-ups from the per-address sign-up limit.
-SIGN_UP_EXTRA=()
-[[ -n "${SMOKE_TOKEN:-}" ]] && SIGN_UP_EXTRA+=(-H "X-Smoke-Token: $SMOKE_TOKEN")
+# Presenting SMOKE_TOKEN exempts the smoke's sign-ups from the per-address sign-up limit and keeps its legacy
+# requests out of the legacy-use count.
+SMOKE_MARK=()
+[[ -n "${SMOKE_TOKEN:-}" ]] && SMOKE_MARK+=(-H "X-Smoke-Token: $SMOKE_TOKEN")
 
 check 'sign up user A' 201 POST /api/v1/users \
-  "{\"user\":{\"email\":\"$EMAIL_A\",\"password\":\"$PASSWORD\",\"password_confirmation\":\"$PASSWORD\"}}" "${SIGN_UP_EXTRA[@]}"
-TOKEN_A="$(json data authentication_token)"
+  "{\"user\":{\"email\":\"$EMAIL_A\",\"password\":\"$PASSWORD\",\"password_confirmation\":\"$PASSWORD\"}}" "${SMOKE_MARK[@]}"
+LEGACY_TOKEN_A="$(json data authentication_token)"
+[[ -n "${OAUTH_CLIENT_ID:-}" ]] && ACCESS_A="$(json data access_token)"
 
 check 'sign up user B' 201 POST /api/v1/users \
-  "{\"user\":{\"email\":\"$EMAIL_B\",\"password\":\"$PASSWORD\",\"password_confirmation\":\"$PASSWORD\"}}" "${SIGN_UP_EXTRA[@]}"
-TOKEN_B="$(json data authentication_token)"
+  "{\"user\":{\"email\":\"$EMAIL_B\",\"password\":\"$PASSWORD\",\"password_confirmation\":\"$PASSWORD\"}}" "${SMOKE_MARK[@]}"
+LEGACY_TOKEN_B="$(json data authentication_token)"
+[[ -n "${OAUTH_CLIENT_ID:-}" ]] && ACCESS_B="$(json data access_token)"
 
 check 'sign up rejects mismatched confirmation' 422 POST /api/v1/users \
-  "{\"user\":{\"email\":\"dup-$STAMP@example.com\",\"password\":\"$PASSWORD\",\"password_confirmation\":\"nope\"}}" "${SIGN_UP_EXTRA[@]}"
+  "{\"user\":{\"email\":\"dup-$STAMP@example.com\",\"password\":\"$PASSWORD\",\"password_confirmation\":\"nope\"}}" "${SMOKE_MARK[@]}"
 
-AUTH_A=(-H "X-User-Token: $TOKEN_A" -H "X-User-Email: $EMAIL_A")
-AUTH_B=(-H "X-User-Token: $TOKEN_B" -H "X-User-Email: $EMAIL_B")
+LEGACY_A=(-H "X-User-Token: $LEGACY_TOKEN_A" -H "X-User-Email: $EMAIL_A" "${SMOKE_MARK[@]}")
+LEGACY_B=(-H "X-User-Token: $LEGACY_TOKEN_B" -H "X-User-Email: $EMAIL_B" "${SMOKE_MARK[@]}")
+if [[ -n "${OAUTH_CLIENT_ID:-}" ]]; then
+  AUTH_A=(-H "Authorization: Bearer $ACCESS_A")
+  AUTH_B=(-H "Authorization: Bearer $ACCESS_B")
+else
+  AUTH_A=("${LEGACY_A[@]}")
+  AUTH_B=("${LEGACY_B[@]}")
+  echo 'SKIP  bearer pass: OAUTH_CLIENT_ID is not set, the authenticated checks use the legacy headers (marked only when SMOKE_TOKEN is set)'
+fi
+
+# Mirrors Auth::LegacyUsage.enabled?: only the false values of ActiveModel::Type::Boolean switch the path off.
+legacy_enabled() {
+  case "${LEGACY_AUTH_ENABLED:-}" in
+    0 | f | F | false | FALSE | off | OFF) return 1 ;;
+    *) return 0 ;;
+  esac
+}
 
 # --- sign in --------------------------------------------------------------
+# The documented 401 is not provoked: every refused sign-in counts as a failed sign-in for the deploy's source
+# (spec/requests/failed_sign_in_limit_spec.rb pins it).
 check 'sign in' 200 POST /api/v1/sign_in "{\"email\":\"$EMAIL_A\",\"password\":\"$PASSWORD\"}"
-check 'sign in rejects bad password' 401 POST /api/v1/sign_in "{\"email\":\"$EMAIL_A\",\"password\":\"wrong\"}"
+
+# --- OAuth tokens and sign-out --------------------------------------------
+# Rate-limit refusals (429) are documented but never provoked here: a live deploy must not refuse its own
+# sign-ins. The checks that need the public web client (OAUTH_CLIENT_ID) are skipped without it, since the
+# server then issues no tokens. Sign-out uses a bearer token only: the legacy headers would rotate user A's token.
+check 'token for an unknown client' 401 POST /oauth/token \
+  "{\"grant_type\":\"password\",\"client_id\":\"smoke-unknown-client\",\"username\":\"$EMAIL_A\",\"password\":\"$PASSWORD\"}"
+check 'sign out without token' 401 POST /api/v1/sign_out
+if [[ -n "${OAUTH_CLIENT_ID:-}" ]]; then
+  check 'token for this device' 200 POST /oauth/token \
+    "{\"grant_type\":\"password\",\"client_id\":\"$OAUTH_CLIENT_ID\",\"username\":\"$EMAIL_A\",\"password\":\"$PASSWORD\"}"
+  BEARER_ACCESS="$(json access_token)"
+  BEARER_REFRESH="$(json refresh_token)"
+  # A wrong password would count as a failed sign-in for the deploy's source; a refresh token no one was issued
+  # gets the same invalid_grant and counts nothing.
+  check 'token refuses an unknown refresh token' 400 POST /oauth/token \
+    "{\"grant_type\":\"refresh_token\",\"client_id\":\"$OAUTH_CLIENT_ID\",\"refresh_token\":\"smoke-unknown-$STAMP\"}"
+  check 'sign out this device' 204 POST /api/v1/sign_out '' -H "Authorization: Bearer $BEARER_ACCESS"
+  check 'revoke a token' 200 POST /oauth/revoke \
+    "{\"client_id\":\"$OAUTH_CLIENT_ID\",\"token\":\"$BEARER_REFRESH\"}"
+else
+  echo 'SKIP  /oauth/token 200 and 400, /api/v1/sign_out 204, /oauth/revoke 200: OAUTH_CLIENT_ID is not set'
+fi
 
 # --- me -------------------------------------------------------------------
 check 'me' 200 GET /api/v1/me '' "${AUTH_A[@]}"
@@ -111,41 +161,84 @@ check 'me without token' 401 GET /api/v1/me
 check 'projects index' 200 GET /api/v1/projects '' "${AUTH_A[@]}"
 check 'projects index without token' 401 GET /api/v1/projects
 
-check 'create project' 201 POST /api/v1/projects \
-  "{\"project\":{\"name\":\"Smoke Proj\",\"description\":\"$DESC\"}}" "${AUTH_A[@]}"
+check 'create project' 201 POST /api/v1/projects "$PROJECT_BODY" "${AUTH_A[@]}"
 PROJECT_ID="$(json data id)"
+check 'create project without token' 401 POST /api/v1/projects "$PROJECT_BODY"
 
 check 'create project rejects short description' 422 POST /api/v1/projects \
   '{"project":{"name":"Smoke Proj","description":"too short"}}' "${AUTH_A[@]}"
 
 check 'show project' 200 GET "/api/v1/projects/$PROJECT_ID" '' "${AUTH_A[@]}"
+check 'show project without token' 401 GET "/api/v1/projects/$PROJECT_ID"
 check 'show missing project' 404 GET /api/v1/projects/999999 '' "${AUTH_A[@]}"
 check "show another user's project" 404 GET "/api/v1/projects/$PROJECT_ID" '' "${AUTH_B[@]}"
 
-check 'update project' 200 PUT "/api/v1/projects/$PROJECT_ID" \
-  "{\"project\":{\"name\":\"Smoke Proj 2\",\"description\":\"$DESC\"}}" "${AUTH_A[@]}"
+check 'update project' 200 PUT "/api/v1/projects/$PROJECT_ID" "$PROJECT_UPDATE_BODY" "${AUTH_A[@]}"
+check 'update project without token' 401 PUT "/api/v1/projects/$PROJECT_ID" '{"project":{"name":"Smoke Proj 3"}}'
+check 'update missing project' 404 PUT /api/v1/projects/999999 '{"project":{"name":"Smoke Proj 3"}}' "${AUTH_A[@]}"
+check 'update project rejects long name' 422 PUT "/api/v1/projects/$PROJECT_ID" \
+  '{"project":{"name":"A name far too long for it"}}' "${AUTH_A[@]}"
 
 # --- tasks ----------------------------------------------------------------
 check 'tasks index' 200 GET "/api/v1/projects/$PROJECT_ID/tasks" '' "${AUTH_A[@]}"
 check 'tasks index for missing project' 404 GET /api/v1/projects/999999/tasks '' "${AUTH_A[@]}"
+check 'tasks index without token' 401 GET "/api/v1/projects/$PROJECT_ID/tasks"
 
-check 'create task' 201 POST "/api/v1/projects/$PROJECT_ID/tasks" \
-  '{"task":{"name":"Smoke Task","description":"Smoke task description","status":"not_started"}}' "${AUTH_A[@]}"
+check 'create task' 201 POST "/api/v1/projects/$PROJECT_ID/tasks" "$TASK_BODY" "${AUTH_A[@]}"
 TASK_ID="$(json data id)"
+check 'create task without token' 401 POST "/api/v1/projects/$PROJECT_ID/tasks" \
+  '{"task":{"name":"Smoke Task","description":"Smoke task description"}}'
+check 'create task in missing project' 404 POST /api/v1/projects/999999/tasks \
+  '{"task":{"name":"Smoke Task","description":"Smoke task description"}}' "${AUTH_A[@]}"
 
 check 'create task rejects blank fields' 422 POST "/api/v1/projects/$PROJECT_ID/tasks" \
   '{"task":{"name":"","description":"","status":""}}' "${AUTH_A[@]}"
 
 check 'show task' 200 GET "/api/v1/projects/$PROJECT_ID/tasks/$TASK_ID" '' "${AUTH_A[@]}"
 check 'show missing task' 404 GET "/api/v1/projects/$PROJECT_ID/tasks/999999" '' "${AUTH_A[@]}"
+check 'show task without token' 401 GET "/api/v1/projects/$PROJECT_ID/tasks/$TASK_ID"
 
 check 'update task' 200 PUT "/api/v1/projects/$PROJECT_ID/tasks/$TASK_ID" \
   '{"task":{"name":"Smoke Task 2","description":"Updated description","status":"in_progress"}}' "${AUTH_A[@]}"
 check 'update task rejects blank fields' 422 PUT "/api/v1/projects/$PROJECT_ID/tasks/$TASK_ID" \
   '{"task":{"name":"","description":"","status":""}}' "${AUTH_A[@]}"
+check 'update task without token' 401 PUT "/api/v1/projects/$PROJECT_ID/tasks/$TASK_ID" '{"task":{"status":"completed"}}'
+check 'update missing task' 404 PUT "/api/v1/projects/$PROJECT_ID/tasks/999999" \
+  '{"task":{"status":"completed"}}' "${AUTH_A[@]}"
 
+check 'delete project with tasks is refused' 422 DELETE "/api/v1/projects/$PROJECT_ID" '' "${AUTH_A[@]}"
+check 'delete task without token' 401 DELETE "/api/v1/projects/$PROJECT_ID/tasks/$TASK_ID"
+check 'delete missing task' 404 DELETE "/api/v1/projects/$PROJECT_ID/tasks/999999" '' "${AUTH_A[@]}"
 check 'delete task' 204 DELETE "/api/v1/projects/$PROJECT_ID/tasks/$TASK_ID" '' "${AUTH_A[@]}"
+check 'delete project without token' 401 DELETE "/api/v1/projects/$PROJECT_ID"
+check 'delete missing project' 404 DELETE /api/v1/projects/999999 '' "${AUTH_A[@]}"
 check 'delete project' 204 DELETE "/api/v1/projects/$PROJECT_ID" '' "${AUTH_A[@]}"
+
+# --- legacy pass ----------------------------------------------------------
+# The legacy headers until the evidence cutoff (ADR-0005), every request marked so it is not counted as a legacy
+# use. No legacy sign-out: it would rotate user A's legacy token.
+if ! legacy_enabled; then
+  echo 'SKIP  legacy pass: LEGACY_AUTH_ENABLED is off'
+elif [[ -z "${SMOKE_TOKEN:-}" ]]; then
+  echo 'SKIP  legacy pass: SMOKE_TOKEN is not set, so the pass could not be marked and would be counted'
+else
+  check 'legacy me' 200 GET /api/v1/me '' "${LEGACY_A[@]}"
+  check 'legacy projects index' 200 GET /api/v1/projects '' "${LEGACY_A[@]}"
+  check 'legacy create project' 201 POST /api/v1/projects "$PROJECT_BODY" "${LEGACY_A[@]}"
+  LEGACY_PROJECT_ID="$(json data id)"
+  check "legacy show another user's project" 404 GET "/api/v1/projects/$LEGACY_PROJECT_ID" '' "${LEGACY_B[@]}"
+  check 'legacy update project' 200 PUT "/api/v1/projects/$LEGACY_PROJECT_ID" "$PROJECT_UPDATE_BODY" "${LEGACY_A[@]}"
+  check 'legacy create task' 201 POST "/api/v1/projects/$LEGACY_PROJECT_ID/tasks" "$TASK_BODY" "${LEGACY_A[@]}"
+  LEGACY_TASK_ID="$(json data id)"
+  check 'legacy delete task' 204 DELETE "/api/v1/projects/$LEGACY_PROJECT_ID/tasks/$LEGACY_TASK_ID" '' "${LEGACY_A[@]}"
+  check 'legacy delete project' 204 DELETE "/api/v1/projects/$LEGACY_PROJECT_ID" '' "${LEGACY_A[@]}"
+fi
+
+# --- bearer sign-out ------------------------------------------------------
+if [[ -n "${OAUTH_CLIENT_ID:-}" ]]; then
+  check 'sign out' 204 POST /api/v1/sign_out '' "${AUTH_A[@]}"
+  check 'me after sign-out' 401 GET /api/v1/me '' "${AUTH_A[@]}"
+fi
 
 # --- docs -----------------------------------------------------------------
 check 'swagger UI' 200 GET /api-docs/index.html

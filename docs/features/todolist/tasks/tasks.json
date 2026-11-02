@@ -388,7 +388,7 @@
       ],
       "estimate": "M",
       "owner": "OlegShevtsov1",
-      "status": "todo",
+      "status": "done",
       "repo": "1_mvp_pilot_be",
       "trello_card_id": "6ada301f2350e23cb303336a",
       "trello_card_id_short": 240
@@ -424,7 +424,7 @@
       ],
       "estimate": "L",
       "owner": "OlegShevtsov1",
-      "status": "todo",
+      "status": "done",
       "repo": "1_mvp_pilot_be",
       "trello_card_id": "6ada3021e1ae5b7b00d04ea8",
       "trello_card_id_short": 241
@@ -458,7 +458,7 @@
       ],
       "estimate": "M",
       "owner": "OlegShevtsov1",
-      "status": "todo",
+      "status": "done",
       "repo": "1_mvp_pilot_be",
       "trello_card_id": "6ada3022be0eb522959415a5",
       "trello_card_id_short": 242
@@ -488,7 +488,7 @@
       ],
       "estimate": "M",
       "owner": "OlegShevtsov1",
-      "status": "todo",
+      "status": "done",
       "repo": "1_mvp_pilot_be",
       "type": "chore",
       "trello_card_id": "6ada302404cbe77bba09adae",
@@ -732,9 +732,39 @@
       ],
       "estimate": "M",
       "owner": "OlegShevtsov1",
-      "status": "todo",
+      "status": "done",
       "repo": "1_mvp_pilot_fe",
+      "trello_card_id": "6adae7956fc45fec7e834257",
       "trello_card_id_short": 273
+    },
+    {
+      "id": "T25",
+      "title": "Redesign the landing page in style A (dark tech)",
+      "layer": "ui",
+      "deps": [
+        "T23"
+      ],
+      "acs": [
+        "AC-01"
+      ],
+      "dod": [
+        "Landing page in style A: header with the brand and Sign in, a hero with both calls to action and an aria-hidden dashboard preview, four feature cards and a closing call to action",
+        "Style A palette for light and dark in the shared design tokens (src/styles/tokens.css); WCAG AA contrast checked for both themes; motion only under prefers-reduced-motion: no-preference",
+        "The debug footer and its /health call render only when ENV_NAME is dev",
+        "Lint, typecheck, tests and build green; e2e screenshots of the landing page"
+      ],
+      "files_hint": [
+        "src/routes/Landing*",
+        "src/styles/tokens.css",
+        "src/App.tsx",
+        "e2e/"
+      ],
+      "estimate": "M",
+      "owner": "OlegShevtsov1",
+      "status": "done",
+      "repo": "1_mvp_pilot_fe",
+      "trello_card_id": "6adb026e9c2c1b47890b393b",
+      "trello_card_id_short": 279
     }
   ]
 }

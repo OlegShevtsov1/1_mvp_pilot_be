@@ -1,6 +1,11 @@
 require 'rails_helper'
 
 RSpec.describe 'Failed sign-in limit', type: :request do
+  include ActiveSupport::Testing::TimeHelpers
+
+  # Windows are clock minutes; a frozen clock keeps an example's attempts in one.
+  before { freeze_time }
+
   let!(:web_client) { Doorkeeper::Application.create!(name: 'todolist web', uid: 'web-client-test', confidential: false) }
   let(:user) { create(:user) }
 
@@ -201,6 +206,54 @@ RSpec.describe 'Failed sign-in limit', type: :request do
       expect_wait_refusal
       expect(first.value.response).to have_http_status(:unauthorized)
       expect(checks).to eq(1)
+    end
+
+    it 'keeps counting the window a restart left only in Redis when a give-back lands after its window' do
+      travel_to Time.zone.local(2026, 1, 1, 12, 0, 10)
+      fail_legacy_sign_ins(1)
+      ErrorsController::RateLimitStore::FALLBACK.clear
+      travel_to Time.zone.local(2026, 1, 1, 12, 0, 40)
+      allow_any_instance_of(User).to receive(:valid_password?).and_wrap_original do |original, *args|
+        travel_to Time.zone.local(2026, 1, 1, 12, 1, 15)
+        original.call(*args)
+      end
+      legacy_sign_in(password: 'password')
+      expect(response).to have_http_status(:ok)
+      allow_any_instance_of(User).to receive(:valid_password?).and_call_original
+      travel_to Time.zone.local(2026, 1, 1, 12, 1, 45)
+      fail_legacy_sign_ins(5)
+      ErrorsController::RateLimitStore::FALLBACK.clear
+      fail_legacy_sign_ins(5)
+
+      legacy_sign_in
+
+      expect_wait_refusal
+    end
+
+    it 'does not take a give-back from the next window another failure opened' do
+      travel_to Time.zone.local(2026, 1, 1, 12, 0, 50)
+      checks = 0
+      allow_any_instance_of(User).to receive(:valid_password?).and_wrap_original do |original, *args|
+        checks += 1
+        if checks == 1
+          travel_to Time.zone.local(2026, 1, 1, 12, 1, 55)
+          other = Thread.new do
+            open_session.tap do |session|
+              session.post '/api/v1/sign_in', params: { email: user.email, password: 'wrong-password' }, as: :json,
+                                              env: { 'REMOTE_ADDR' => '203.0.113.7' }
+            end
+          end
+          expect(other.value.response).to have_http_status(:unauthorized)
+        end
+        original.call(*args)
+      end
+      legacy_sign_in(password: 'password')
+      expect(response).to have_http_status(:ok)
+      fail_legacy_sign_ins(9)
+
+      legacy_sign_in
+
+      expect_wait_refusal
     end
 
     it 'keeps each source apart' do

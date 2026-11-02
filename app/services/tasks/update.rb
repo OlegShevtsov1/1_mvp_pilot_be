@@ -11,14 +11,10 @@ module Tasks
     end
 
     def call
-      begin
-        if @task.update(task_params)
-          @task = Task.includes(:project).find(@task.id)
-        else
-          @errors = @task.errors.full_messages
-        end
-      rescue ArgumentError => e
-        @errors << e.message
+      if @task.update(task_params)
+        @task = Task.includes(:project).find(@task.id)
+      else
+        @errors = @task.errors.full_messages
       end
 
       self

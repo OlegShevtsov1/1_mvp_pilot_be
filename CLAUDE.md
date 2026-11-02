@@ -113,4 +113,5 @@ exact `run:` lines of CI steps (`.github/workflows/rails-test.yml`, `rails-lint.
 - Do not skip a phase gate or set a PRD to `Approved` on someone's behalf.
 - Do not run `kamal app start` without `--version` (dev versions are `sha-<sha>`, prod `prod-sha-<sha>`; Kamal's
   default is the bare git sha, which no image has, so the app stays down).
-- Do not run `kamal remove` or `kamal proxy *` with `config/deploy.dev.yml`: its kamal-proxy is shared.
+- Do not run `kamal remove` or `kamal proxy *` with `config/deploy.dev.yml` or `config/deploy.prod-srv.yml`: their
+  kamal-proxy is shared.

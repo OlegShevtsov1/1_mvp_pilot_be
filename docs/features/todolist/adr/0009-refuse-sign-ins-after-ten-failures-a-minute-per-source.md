@@ -34,10 +34,10 @@ to authentication code and for a new status on a public operation.
 ## Considered options
 
 1. **Count failures in the existing `RateLimitStore`, check before the password** — `Auth::FailedSignInLimit`
-   counts each password attempt under `failed-sign-in:<source>` before any credential lookup, in one atomic
+   counts each password attempt under `failed-sign-in:<source>:<minute>` before any credential lookup, in one atomic
    increment, and gives the count back unless the credentials were wrong, so a success or a server error during the
    check does not count; both doors answer 429 with `Retry-After: 60` to
-   the attempt that takes the source past 10 in its one-minute window. Counting before the check keeps attempts in
+   the attempt that takes the source past 10 in its window, the clock minute the key names. Counting before the check keeps attempts in
    flight together from all passing a count none of them has added to yet. The OAuth
    door does this in `Oauth::TokensController`, a `Doorkeeper::TokensController` subclass, because Doorkeeper
    renders its own errors only with OAuth statuses. The source is `remote_ip` when the direct peer is in Rails'
@@ -59,13 +59,13 @@ adds no dependency; the source rule keeps a caller from picking its own bucket w
 
 **Negative**
 - Visitors behind one NAT or office address share a bucket.
-- The window is fixed, so up to 20 failures can land across a window edge.
+- The window is fixed (windows are clock minutes), so up to 20 failures can land across a window edge.
 
 **Neutral**
 - A refused (429) attempt adds to the count without moving the window's end; a success gives back only its own
-  attempt and does not reset the failures before it. A give-back that lands after its window ended does not open
-  the next window below zero; one that lands in a next window another attempt already opened takes one count from
-  it.
+  attempt and does not reset the failures before it. A give-back returns the attempt to the minute it was counted
+  in, whichever store remembers it, so one that lands after that minute changes nothing the next minute counts, and
+  a minute whose count was lost is not taken below zero (PILOT-288).
 - "The proxy" is any address in Rails' trusted-proxy list (loopback and private ranges); no proxy address is pinned
   in config. Narrowing it later is a config change; the list is matched with `===`, as Rails' `RemoteIp` does, so
   addresses, ranges and patterns all work.

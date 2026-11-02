@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# The Kamal role cron runs this from the app image (sad.md §7): tokens:purge now, then once a day.
+# A failing run is reported to GlitchTip by the Sentry rake integration and retried the next day,
+# so the container keeps running instead of restarting into a loop of failures.
+set -uo pipefail
+
+interval="${PURGE_INTERVAL_SECONDS:-86400}"
+trap 'exit 0' TERM INT
+
+while true; do
+  ./bin/rails tokens:purge || echo "tokens:purge failed (exit $?); next run in ${interval}s" >&2
+  sleep "${interval}" &
+  wait $!
+done

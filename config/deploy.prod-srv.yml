@@ -1,0 +1,110 @@
+# Kamal 2 prod deployment on the on-prem srv host, picked by target=srv of the Kamal Deploy and
+# Kamal Manage workflows (deploy/deploy.sh prod-srv, deploy/rollback.sh prod-srv,
+# deploy/manage.sh <action> prod-srv). It differs from config/deploy.yml only in the host, the
+# SSH user and the proxy.
+#
+# Self-contained: always pass it with -c, never -d. A destination would be merged into
+# config/deploy.yml, which is the AWS prod configuration.
+#
+#   bundle exec kamal app containers -c config/deploy.prod-srv.yml
+#
+# The kamal-proxy on the srv host is shared with dev and another deployment. Never run
+# `kamal remove` or `kamal proxy reboot|remove` with this file: they would stop or restart that proxy.
+#
+# Project identity comes from config/project.env (read relative to the working directory,
+# so run from the repository root); the host and the registry come from the environment.
+# PROD_SRV_VPN_IP is the srv host's address on the mvp VPN. It is a secret and is never committed.
+<%
+  project = File.readlines('config/project.env', chomp: true).grep(/\A[A-Z_]+=/).to_h { |line| line.split('=', 2) }
+  name = project.fetch('PROJECT_NAME')
+  zone = project.fetch('PROJECT_ZONE')
+  host = ENV.fetch('PROD_SRV_VPN_IP')
+%>
+service: <%= name %>
+image: <%= name %>
+
+secrets_path: .kamal/secrets.prod
+
+servers:
+  web:
+    - <%= host %>
+  # The daily token purge (bin/purge-scheduler, sad.md §7): same image and env, no proxy, no port.
+  cron:
+    hosts:
+      - <%= host %>
+    cmd: bin/purge-scheduler
+
+# Its own user and key (PROD_SRV_SSH_KEY in the GitHub environment prod), never dev's.
+ssh:
+  user: <%= name %>-prod
+
+# Nothing is built for prod: deploy/deploy.sh promotes the dev-built sha-<sha> to prod-sha-<sha>
+# (same layers, label service=<name>) and deploys it with --skip-push.
+registry:
+  server: <%= ENV.fetch('KAMAL_REGISTRY_SERVER') %>
+  username: AWS
+  password:
+    - KAMAL_REGISTRY_PASSWORD
+
+builder:
+  arch: amd64
+
+# TLS is terminated by the public TLS terminator in front of the shared kamal-proxy, as for dev;
+# kamal-proxy trusts its X-Forwarded-* headers. The app still forces SSL.
+proxy:
+  host: <%= zone %>
+  app_port: 3000
+  forward_headers: true
+  healthcheck:
+    path: /health
+    interval: 3
+    timeout: 5
+  # The ports of the running shared proxy; only used if it had to be started from scratch.
+  run:
+    http_port: 8091
+    https_port: 8491
+
+deploy_timeout: 120
+
+env:
+  clear:
+    RAILS_ENV: production
+    RAILS_FORCE_SSL: "true"
+    RAILS_LOG_LEVEL: info
+    RAILS_MAX_THREADS: 5
+    DB_NAME: <%= name %>_prod
+    REDIS_URL: redis://<%= name %>-redis:6379/0
+    SENTRY_ENVIRONMENT: prod
+    CORS_ALLOWED_ORIGINS: https://app.<%= zone %>
+    # Public Google OAuth client id from the GitHub environment variable GOOGLE_CLIENT_ID; never committed, empty when unset.
+    GOOGLE_CLIENT_ID: <%= ENV.fetch('GOOGLE_CLIENT_ID', '').to_json %>
+    # Public OAuth client id of the web app from the GitHub environment variable OAUTH_CLIENT_ID; never committed, empty when unset.
+    OAUTH_CLIENT_ID: <%= ENV.fetch('OAUTH_CLIENT_ID', '').to_json %>
+  secret:
+    - SECRET_KEY_BASE
+    - DATABASE_URL
+    - SENTRY_DSN
+    - SENTRY_ALLOWED_FE_DSN
+    - SMOKE_TOKEN
+
+# Both accessories join the "kamal" Docker network and are resolved by container name.
+# Neither publishes a port; their data lives in named volumes that survive redeploys. On the srv
+# host they start empty: Prod Switch brings the data over (dump and restore).
+# beszel-agent-prod is added once I6 provides the Beszel hub key.
+accessories:
+  db:
+    image: postgres:16-alpine
+    host: <%= host %>
+    env:
+      clear:
+        POSTGRES_USER: postgres
+        POSTGRES_DB: <%= name %>_prod
+      secret:
+        - POSTGRES_PASSWORD
+    volumes:
+      - <%= name %>-pg-data:/var/lib/postgresql/data
+  redis:
+    image: redis:7-alpine
+    host: <%= host %>
+    volumes:
+      - <%= name %>-redis-data:/data

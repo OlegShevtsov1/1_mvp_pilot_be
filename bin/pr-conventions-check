@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Checks a pull request against the branching conventions (decisions 24-26, 29, 64); the
+# Checks a pull request against the branching conventions (decisions 24-26, 29, 64, 91); the
 # pr-conventions-check workflow runs it on every pull request into main or develop.
 #   1. The head branch is feature/PILOT-<n>-<slug> or hotfix/PILOT-<n>-<slug>, the factory's
 #      archon/task-factory-*, or develop when the base is main (the release PR).
@@ -9,6 +9,7 @@
 #   4. A release PR, titled PILOT-<n>: Release vX.Y.Z, has a "## Changelog" heading in the body followed by
 #      the CHANGELOG.md section [X.Y.Z] verbatim, as scripts/release-notes.sh prints it; other titles skip it.
 #      The section ends at the next "## " heading or the Type: line.
+#   5. A release PR or release-prep PR is titled with the release's own card, never PILOT-0 (decision 91).
 # Env: HEAD_REF, BASE_REF, PR_TITLE, PR_BODY, CHANGELOG_FILE (optional, default CHANGELOG.md of this repository).
 # Exit 0: every condition holds. Exit 1: at least one failed; each failure is printed. Exit 2: usage error.
 set -uo pipefail
@@ -73,6 +74,11 @@ if [[ "${title}" =~ ^PILOT-[0-9]+:\ Release\ v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
     [[ "${given}" == "${notes}" ]] ||
       fail 4 "the '## Changelog' section of the body is not the CHANGELOG.md section [${version}]: paste the output of scripts/release-notes.sh v${version}"
   fi
+fi
+
+no_card_release="^PILOT-0[0-9]*: Release "
+if [[ "${title}" =~ ${no_card_release} ]]; then
+  fail 5 "a release PR is titled PILOT-<n>: Release vX.Y.Z (release-prep: PILOT-<n>: Release X.Y.Z changelog) with the release's own card, never PILOT-0 (decision 91: every release has its own card; PILOT-0 is only for card-less chores)"
 fi
 
 (( failed == 0 )) || exit 1

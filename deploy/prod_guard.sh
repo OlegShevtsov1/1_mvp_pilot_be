@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Dual control for the prod workflows, before anything touches prod.
 # Usage: deploy/prod_guard.sh deploy|manage
-# Env: REF (github.ref), CONFIRM, and ENVIRONMENT + VERSION (deploy) or ACTION + VERSION (manage).
+# Env: REF (github.ref), CONFIRM, and ENVIRONMENT + VERSION (deploy) or ACTION + VERSION (manage);
+# TARGET (aws when unset or empty, or srv) picks the prod host and is printed as destination=prod
+# or destination=prod-srv, the argument of the deploy scripts.
 # deploy: VERSION must be a release tag vX.Y.Z, never a sha (R-C9); prints tag=<tag>, and
 # deploy/release_tag_check.sh then checks that the tag is annotated and on main.
 # MIRROR=true (the workflow's reading of vars.MIRROR) is mirror mode: SOURCE_SHA must be the 40-hex
@@ -25,6 +27,12 @@ normalize_version() {
 MODE="${1:-}"
 [[ "${REF:-}" == 'refs/heads/main' ]] || fail "prod runs only from main (got ${REF:-no ref})"
 
+case "${TARGET:-aws}" in
+  aws) destination=prod ;;
+  srv) destination=prod-srv ;;
+  *) fail "target must be aws or srv (got '${TARGET}')" ;;
+esac
+
 case "$MODE" in
   deploy)
     [[ "${ENVIRONMENT:-}" == 'prod' ]] || fail "environment must be 'prod'"
@@ -42,6 +50,7 @@ case "$MODE" in
     fi
     echo "tag=${VERSION}"
     [[ "${MIRROR:-}" != 'true' ]] || echo "source_sha=${SOURCE_SHA}"
+    echo "destination=${destination}"
     ;;
   manage)
     case "${ACTION:-}" in
@@ -51,9 +60,12 @@ case "$MODE" in
       remove) [[ "${CONFIRM:-}" == 'remove-prod' ]] || fail 'remove needs confirm=remove-prod' ;;
       *) fail 'unknown action (supported: status, logs, restart, rollback, remove)' ;;
     esac
+    [[ "${ACTION}" != 'remove' || "${destination}" != 'prod-srv' ]] ||
+      fail 'remove is refused on srv: kamal remove would also remove the kamal-proxy shared with dev and another deployment'
     version=''
     [[ -z "${VERSION:-}" ]] || version="$(normalize_version "$VERSION")"
     echo "version=${version}"
+    echo "destination=${destination}"
     ;;
   *)
     echo 'usage: deploy/prod_guard.sh deploy|manage' >&2

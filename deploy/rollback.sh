@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # Roll a deployment back to an earlier version that is still on its host.
-# Usage: deploy/rollback.sh dev|prod [sha-<40 hex>]   (defaults to the newest version before the current one)
-# prod needs the typed confirm ROLLBACK-prod: env CONFIRM, or typed at the prompt in a terminal.
-# Needs the same environment as deploy/deploy.sh: Kamal re-renders the env files on boot. On prod
-# the ECR tags follow: prod-current becomes the rolled-back image, prod-previous the one replaced.
+# Usage: deploy/rollback.sh dev|prod|prod-srv [sha-<40 hex>]   (defaults to the newest version before the current one)
+# prod and prod-srv need the typed confirm ROLLBACK-prod: env CONFIRM, or typed at the prompt in a
+# terminal. Needs the same environment as deploy/deploy.sh: Kamal re-renders the env files on boot.
+# On prod the ECR tags follow: <prefix>-current becomes the rolled-back image, <prefix>-previous the
+# one replaced, for the prefixes of deploy/_common.sh live_tag_prefixes (prod-* on the live prod
+# host, prod-srv-* on the srv host, prod-aws-* on the AWS host while it is not live).
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 source deploy/_common.sh
 
 select_destination "${1:-}"
-if [[ "$DESTINATION" == 'prod' && "${CONFIRM:-}" != 'ROLLBACK-prod' ]]; then
+if is_prod && [[ "${CONFIRM:-}" != 'ROLLBACK-prod' ]]; then
   if [[ -t 0 ]]; then
     read -r -p 'Type ROLLBACK-prod to roll prod back: ' CONFIRM
   fi
@@ -24,6 +26,11 @@ resolve_registry
 require_secrets
 
 SERVICE="$(service_name)"
+
+# has_container <role> <kamal version> < `kamal app containers -q` output
+has_container() {
+  grep -qE "(^|[^A-Za-z0-9_.-])${SERVICE}-$1-$2(_replaced_[A-Za-z0-9]+)?([^A-Za-z0-9_.-]|\$)"
+}
 VERSION="${2:-}"
 
 if [[ -z "$VERSION" ]]; then
@@ -53,11 +60,21 @@ if [[ -z "$VERSION" ]]; then
 fi
 require_version "$VERSION"
 
-echo "==> Rolling back to $(kamal_version "$VERSION")"
-kamal rollback "$(kamal_version "$VERSION")"
+# Kamal refuses a rollback unless every role has a container of the version, and a version from
+# before the cron role has only web: roll back web alone, leaving the newer cron container running.
+target="$(kamal_version "$VERSION")"
+containers="$(kamal app containers -q 2>/dev/null || true)"
+roles=()
+if has_container web "$target" <<<"$containers" && ! has_container cron "$target" <<<"$containers"; then
+  roles=(--roles web)
+  echo "==> ${target} has no cron container; rolling back the web role only"
+fi
+
+echo "==> Rolling back to ${target}"
+kamal rollback "$target" "${roles[@]}"
 wait_release "$VERSION" "$HEALTH_TIMEOUT"
 
-if [[ "$DESTINATION" == 'prod' ]]; then
+if is_prod; then
   crane_login
   rotate_prod_tags "$(kamal_version "$VERSION")"
 fi

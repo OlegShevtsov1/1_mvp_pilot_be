@@ -51,6 +51,32 @@ RSpec.describe 'bin/pr-conventions-check' do
     end
   end
 
+  # Every release has its own card; PILOT-0 is only for card-less chores (decision 91).
+  [
+    [ 'PILOT-0: Release v1.2.3', 'develop', 'main' ],
+    [ 'PILOT-0: Release 1.2.3 changelog', 'archon/task-factory-1792086449006', 'develop' ],
+    [ 'PILOT-00: Release v1.2.3', 'develop', 'main' ]
+  ].each do |title, head, base|
+    it "fails condition 5 for the release title #{title.inspect} into #{base}" do
+      conventions('PR_TITLE' => title, 'HEAD_REF' => head, 'BASE_REF' => base) do |output, status|
+        expect(status.exitstatus).to eq(1)
+        expect(output).to include('::error::condition 5 failed:', 'decision 91', 'PILOT-<n>: Release vX.Y.Z')
+        expect(output).not_to include('condition 1', 'condition 2', 'condition 3')
+      end
+    end
+  end
+
+  [
+    [ 'PILOT-0: Sync main (abc1234)', 'develop', 'main' ],
+    [ 'PILOT-12: Release 1.2.3 changelog', 'archon/task-factory-1792086449006', 'develop' ]
+  ].each do |title, head, base|
+    it "passes the title #{title.inspect} from #{head} into #{base}" do
+      conventions('PR_TITLE' => title, 'HEAD_REF' => head, 'BASE_REF' => base) do |output, status|
+        expect(status).to be_success, output
+      end
+    end
+  end
+
   {
     "What and why\n" => 'the body has no Type: line',
     "What\n\n Type: feat\n" => 'the body has no Type: line',

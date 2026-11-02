@@ -15,4 +15,10 @@ class OauthAccessToken < ApplicationRecord
     token = super
     token if token && token.created_at.to_i > REFRESH_TOKEN_IDLE_LIMIT.ago.to_i
   end
+
+  # Rows revoked or expired before time; a row whose expires_in is NULL never expires and stays unless revoked.
+  def self.revoked_or_expired_before(time)
+    expired = where.not(expires_in: nil).where('created_at + make_interval(secs => expires_in) < ?', time)
+    where(revoked_at: ...time).or(expired)
+  end
 end

@@ -25,20 +25,16 @@ class Api::V1::TasksController < Api::V1::BaseController
   end
 
   def create
-    begin
-      service = Tasks::Create.call(current_user, @project, params)
+    service = Tasks::Create.call(current_user, @project, params)
 
-      if service.success?
-        render json: {
-          data: ActiveModelSerializers::SerializableResource.new(
-            service.task, serializer: TaskSerializer
-          )
-        }, status: :created
-      else
-        render json: { errors: service.errors }, status: service.status_error
-      end
-    rescue ArgumentError => e
-      render json: { errors: [ e.message ] }, status: :unprocessable_entity
+    if service.success?
+      render json: {
+        data: ActiveModelSerializers::SerializableResource.new(
+          service.task, serializer: TaskSerializer
+        )
+      }, status: :created
+    else
+      render json: { errors: service.errors }, status: service.status_error
     end
   end
 

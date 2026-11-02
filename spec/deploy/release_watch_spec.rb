@@ -29,6 +29,52 @@ RSpec.describe 'deploy/release_watch.sh' do
         expect(sandbox_log(root, 'curl.log')).to be_empty
       end
     end
+
+    it "on prod-srv polls the srv host's shared proxy with the prod Host, never public DNS" do
+      srv = watch_env.merge('WATCH_DESTINATION' => 'prod-srv', 'PROD_SRV_VPN_IP' => '192.0.2.80')
+      run_script('release_watch.sh', 'health', version, env: srv) do |output, status, root|
+        expect(status).to be_success, output
+        expect(sandbox_log(root, 'curl.log').lines(chomp: true)).to eq(
+          [ "--connect-to #{zone}:80:192.0.2.80:8091 -H X-Forwarded-Proto: https -fsS --max-time 10 http://#{zone}/health" ] * 3
+        )
+        expect(output).to include("checks=3\n", "failed=0\n")
+      end
+    end
+
+    it 'on AWS watches for 10 minutes by default' do
+      run_script('release_watch.sh', 'health', version) do |output, status|
+        expect(status).to be_success, output
+        expect(output).to include("checks=20\n")
+      end
+    end
+
+    # On srv the job holds the shared VPN lock for the whole watch; every other job's vpn-up waits
+    # for that lock only 300 s (CI_VPN_WAIT in 1_mvp_infra scripts/ci-vpn.sh) and then fails.
+    it 'on prod-srv watches by default short enough that the VPN lock is free within 4 minutes' do
+      srv = { 'WATCH_DESTINATION' => 'prod-srv', 'PROD_SRV_VPN_IP' => '192.0.2.80' }
+      run_script('release_watch.sh', 'health', version, env: srv) do |output, status|
+        expect(status).to be_success, output
+        checks = output[/^checks=(\d+)$/, 1].to_i
+        worst_case = (checks * 10) + ((checks - 1) * 30)
+        expect(checks).to be_positive
+        expect(worst_case).to be <= 240
+      end
+    end
+
+    it 'on prod-srv refuses to run without PROD_SRV_VPN_IP' do
+      run_script('release_watch.sh', 'health', version, env: watch_env.merge('WATCH_DESTINATION' => 'prod-srv')) do |output, status, root|
+        expect(status.exitstatus).to eq(2)
+        expect(output).to include('PROD_SRV_VPN_IP is not set')
+        expect(sandbox_log(root, 'curl.log')).to be_empty
+      end
+    end
+
+    it 'refuses an unknown WATCH_DESTINATION' do
+      run_script('release_watch.sh', 'health', version, env: watch_env.merge('WATCH_DESTINATION' => 'dev')) do |_output, status, root|
+        expect(status.exitstatus).to eq(2)
+        expect(sandbox_log(root, 'curl.log')).to be_empty
+      end
+    end
   end
 
   describe 'verdict' do
@@ -65,6 +111,27 @@ RSpec.describe 'deploy/release_watch.sh' do
       message = output[/^message=(.*)$/, 1]
       expect(message).to start_with('❌')
       expect(message).to include('2/20', 'not rolled back', 'confirm=ROLLBACK-prod', 'deploy/rollback.sh prod')
+    end
+
+    it 'states the 10-minute window on AWS and the shorter srv window in the ✅ message' do
+      aws, = verdict
+      srv, = verdict(WATCH_DESTINATION: 'prod-srv', CHECKS: '6')
+      expect(aws[/^message=(.*)$/, 1]).to include('clean for 10 minutes', '20/20')
+      expect(srv[/^message=(.*)$/, 1]).to include('clean for 3 minutes', '6/6')
+    end
+
+    it 'on prod-srv names the srv host and the srv rollback in the ❌ message' do
+      output, = verdict(FAILED: '2', WATCH_DESTINATION: 'prod-srv')
+      message = output[/^message=(.*)$/, 1]
+      expect(message).to start_with("❌ release-watch #{slug} on srv v0.1.0")
+      expect(message).to include('-f target=srv', 'confirm=ROLLBACK-prod', 'deploy/rollback.sh prod-srv')
+    end
+
+    it 'keeps the AWS ❌ message free of srv' do
+      output, = verdict(FAILED: '2')
+      message = output[/^message=(.*)$/, 1]
+      expect(message).to start_with("❌ release-watch #{slug} v0.1.0")
+      expect(message).not_to include('srv')
     end
 
     it 'is ❌ for new GlitchTip issues, naming at most three with titles cut to 80 characters' do

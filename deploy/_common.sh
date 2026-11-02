@@ -1,11 +1,17 @@
 # shellcheck shell=bash
 # Shared by the deploy/*.sh scripts; sourced from the repository root.
 #
-# Both hosts are only reachable through the mvp VPN. dev: DEV_HOST is the vpn-up output dev-host
+# Every host is only reachable through the mvp VPN. dev: DEV_HOST is the vpn-up output dev-host
 # in CI, or the dev host's VPN address in an operator's shell; the public dev URL is not used, so
 # every HTTP check goes straight to the shared kamal-proxy with the dev Host header. prod:
 # PROD_VPN_IP (a secret, never committed) is the SSH target; HTTP checks use the public HTTPS URL,
-# the path users take.
+# the path users take, while the AWS host is the live prod. prod-srv (prod on the on-prem srv
+# host): PROD_SRV_VPN_IP is the SSH target, and HTTP checks go straight to that host's shared
+# kamal-proxy with the prod Host header, like dev, whichever host public DNS points at.
+#
+# The live prod host (PROD_ACTIVE_TARGET aws|srv) is whatever public DNS for the zone points at:
+# Prod Switch moves it through the infra prod stack, and nothing here stores it. CI passes it in;
+# unset, the prod destinations detect it.
 
 PROXY_HTTP_PORT=8091
 
@@ -13,8 +19,9 @@ kamal() {
   bundle exec kamal "$@" -c "$CONFIG"
 }
 
-# select_destination dev|prod: sets DESTINATION, CONFIG, SECRETS_FILE, HEALTH_TIMEOUT and
-# KAMAL_VERSION_PREFIX, and requires the destination's host.
+# select_destination dev|prod|prod-srv: sets DESTINATION, CONFIG, SECRETS_FILE, HEALTH_TIMEOUT
+# and KAMAL_VERSION_PREFIX, and requires the destination's host; the prod destinations also
+# require the live prod host (PROD_ACTIVE_TARGET).
 # shellcheck disable=SC2034 # HEALTH_TIMEOUT is read by the scripts that source this file
 select_destination() {
   DESTINATION="$1"
@@ -33,9 +40,18 @@ select_destination() {
       # The prod image is sha-<sha> re-labelled for the prod service (promote_prod_image).
       KAMAL_VERSION_PREFIX='prod-'
       require_prod_host
+      require_active_target
+      ;;
+    prod-srv)
+      CONFIG='config/deploy.prod-srv.yml'
+      SECRETS_FILE='.kamal/secrets.prod'
+      HEALTH_TIMEOUT=600
+      KAMAL_VERSION_PREFIX='prod-'
+      require_prod_srv_host
+      require_active_target
       ;;
     *)
-      echo "error: unknown destination '$1' (supported: dev, prod)" >&2
+      echo "error: unknown destination '$1' (supported: dev, prod, prod-srv)" >&2
       exit 2
       ;;
   esac
@@ -55,6 +71,62 @@ require_prod_host() {
   fi
 }
 
+require_prod_srv_host() {
+  if [[ -z "${PROD_SRV_VPN_IP:-}" ]]; then
+    echo "error: PROD_SRV_VPN_IP is not set (CI: secret PROD_SRV_VPN_IP; console: the srv host's VPN address)" >&2
+    exit 2
+  fi
+}
+
+# resolve_a <name>: the IPv4 addresses public DNS gives for name, sorted, one per line.
+resolve_a() {
+  getent ahostsv4 "$1" 2> /dev/null | awk '{ print $1 }' | sort -u || true
+}
+
+# detect_active_target: prints aws or srv. Prod is on srv when the zone and app.<zone> resolve to
+# exactly the addresses of dev.<zone> (the public TLS terminator in front of the srv host), on aws
+# when both resolve elsewhere; anything in between is a DNS change in progress and an error.
+detect_active_target() {
+  local zone app dev
+  zone="$(resolve_a "${PROJECT_ZONE}")"
+  app="$(resolve_a "app.${PROJECT_ZONE}")"
+  dev="$(resolve_a "dev.${PROJECT_ZONE}")"
+  if [[ -z "$zone" || -z "$app" || -z "$dev" ]]; then
+    echo "error: ${PROJECT_ZONE}, app.${PROJECT_ZONE} or dev.${PROJECT_ZONE} does not resolve" >&2
+    return 1
+  fi
+  if [[ "$zone" != "$app" ]]; then
+    echo "error: ${PROJECT_ZONE} and app.${PROJECT_ZONE} point at different addresses: DNS is mid-change" >&2
+    return 1
+  fi
+  if [[ "$zone" == "$dev" ]]; then
+    echo srv
+  elif [[ -z "$(comm -12 <(echo "$zone") <(echo "$dev"))" ]]; then
+    echo aws
+  else
+    echo "error: ${PROJECT_ZONE} points partly at the srv host's TLS terminator: DNS is mid-change" >&2
+    return 1
+  fi
+}
+
+require_active_target() {
+  if [[ -z "${PROD_ACTIVE_TARGET:-}" ]]; then
+    load_project_env
+    PROD_ACTIVE_TARGET="$(detect_active_target)" || exit 1
+  fi
+  if [[ "$PROD_ACTIVE_TARGET" != 'aws' && "$PROD_ACTIVE_TARGET" != 'srv' ]]; then
+    echo "error: PROD_ACTIVE_TARGET must be aws or srv (got '${PROD_ACTIVE_TARGET}')" >&2
+    exit 2
+  fi
+  export PROD_ACTIVE_TARGET
+}
+
+# The AWS host while public DNS points at the srv host: users never reach it, and its kamal-proxy
+# cannot renew the certificate for the zone, so it is checked from inside its web container.
+is_idle_aws() {
+  [[ "$DESTINATION" == 'prod' && "$PROD_ACTIVE_TARGET" != 'aws' ]]
+}
+
 require_version() {
   if [[ ! "$1" =~ ^sha-[0-9a-f]{40}$ ]]; then
     echo "error: version '$1' is not sha-<40 hex git sha>" >&2
@@ -69,8 +141,12 @@ load_project_env() {
   set +a
 }
 
+is_prod() {
+  [[ "$DESTINATION" == 'prod' || "$DESTINATION" == 'prod-srv' ]]
+}
+
 service_name() {
-  if [[ "$DESTINATION" == 'prod' ]]; then
+  if is_prod; then
     echo "${PROJECT_NAME}"
   else
     echo "${PROJECT_NAME}-dev"
@@ -139,33 +215,43 @@ require_secrets() {
 }
 
 base_url() {
-  if [[ "$DESTINATION" == 'prod' ]]; then
-    echo "https://${PROJECT_ZONE}"
+  case "$DESTINATION" in
+    prod) echo "https://${PROJECT_ZONE}" ;;
+    prod-srv) echo "http://${PROJECT_ZONE}" ;;
+    *) echo "http://dev.${PROJECT_ZONE}" ;;
+  esac
+}
+
+proxy_connect_to() {
+  if [[ "$DESTINATION" == 'prod-srv' ]]; then
+    echo "${PROJECT_ZONE}:80:${PROD_SRV_VPN_IP}:${PROXY_HTTP_PORT}"
   else
-    echo "http://dev.${PROJECT_ZONE}"
+    echo "dev.${PROJECT_ZONE}:80:${DEV_HOST}:${PROXY_HTTP_PORT}"
   fi
 }
 
-dev_connect_to() {
-  echo "dev.${PROJECT_ZONE}:80:${DEV_HOST}:${PROXY_HTTP_PORT}"
-}
-
-# dev: curl against the shared proxy as if through the public TLS terminator.
+# dev and prod-srv: curl against the shared proxy as if through the public TLS terminator.
 app_curl() {
   if [[ "$DESTINATION" == 'prod' ]]; then
     curl "$@"
   else
-    curl --connect-to "$(dev_connect_to)" -H 'X-Forwarded-Proto: https' "$@"
+    curl --connect-to "$(proxy_connect_to)" -H 'X-Forwarded-Proto: https' "$@"
   fi
 }
 
 # Prod has real users, so its smoke only reads: the full smoke signs up users it cannot delete.
 run_smoke() {
-  if [[ "$DESTINATION" == 'prod' ]]; then
-    SMOKE_READ_ONLY=1 bin/swagger_smoke "$(base_url)"
-  else
-    SMOKE_CONNECT_TO="$(dev_connect_to)" SMOKE_FORWARDED_PROTO=https bin/swagger_smoke "$(base_url)"
+  if is_idle_aws; then
+    echo '==> the AWS host is not the live prod: its read-only smoke runs on the public URL after a Prod Switch'
+    return 0
   fi
+  case "$DESTINATION" in
+    prod) SMOKE_READ_ONLY=1 bin/swagger_smoke "$(base_url)" ;;
+    prod-srv)
+      SMOKE_READ_ONLY=1 SMOKE_CONNECT_TO="$(proxy_connect_to)" SMOKE_FORWARDED_PROTO=https bin/swagger_smoke "$(base_url)"
+      ;;
+    *) SMOKE_CONNECT_TO="$(proxy_connect_to)" SMOKE_FORWARDED_PROTO=https bin/swagger_smoke "$(base_url)" ;;
+  esac
 }
 
 # wait_release <sha-version> <timeout seconds>: the old release (and on dev the other deployment
@@ -173,10 +259,13 @@ run_smoke() {
 wait_release() {
   local version="$1" timeout="$2" url body deadline
   url="$(base_url)/health"
+  if is_idle_aws; then
+    url="${url} (inside the web container)"
+  fi
   echo "==> Waiting up to ${timeout}s for ${url} to report release ${version#sha-}"
   deadline=$(( SECONDS + timeout ))
   while (( SECONDS < deadline )); do
-    body="$(app_curl -fsS --max-time 5 "$url" 2>/dev/null || true)"
+    body="$(health_body 2>/dev/null || true)"
     if [[ "$body" == *'"status":"ok"'* && "$body" == *"\"release\":\"${version#sha-}\""* ]]; then
       echo "==> Healthy: $body"
       return 0
@@ -185,6 +274,14 @@ wait_release() {
   done
   echo "error: ${url} did not report release ${version#sha-} within ${timeout}s (last answer: ${body:-none})" >&2
   return 1
+}
+
+health_body() {
+  if is_idle_aws; then
+    kamal app exec --reuse --roles=web -q 'curl -fsS --max-time 5 http://localhost:3000/health'
+  else
+    app_curl -fsS --max-time 5 "$(base_url)/health"
+  fi
 }
 
 # --- ECR images (crane) -------------------------------------------------------------------------
@@ -268,23 +365,46 @@ promote_prod_image() {
   fi
 }
 
-# rotate_prod_tags <kamal version>: after a healthy deploy or rollback, prod-current is the image
-# that is live and prod-previous the one that was live before it.
+# live_tag_prefixes: the ECR tag pairs <prefix>-current/<prefix>-previous a healthy deploy or
+# rollback of the destination moves. prod-* always names the live prod host, prod-srv-* the srv
+# host, and prod-aws-* the AWS host while it is not live.
+live_tag_prefixes() {
+  case "$DESTINATION" in
+    prod)
+      if [[ "$PROD_ACTIVE_TARGET" == 'aws' ]]; then echo prod; else echo prod-aws; fi
+      ;;
+    prod-srv)
+      echo prod-srv
+      if [[ "$PROD_ACTIVE_TARGET" == 'srv' ]]; then echo prod; fi
+      ;;
+  esac
+}
+
+# rotate_prod_tags <kamal version>: after a healthy deploy or rollback, <prefix>-current is the
+# image that is live and <prefix>-previous the one that was live before it, for every prefix of
+# live_tag_prefixes.
 rotate_prod_tags() {
-  local live current
+  local live prefix
   if ! live="$(image_digest "$1")"; then
     echo "error: ${PROJECT_NAME}:$1 is not in ECR, the ECR tags were not moved" >&2
     exit 1
   fi
-  current="$(image_digest prod-current || true)"
+  for prefix in $(live_tag_prefixes); do
+    rotate_tag_pair "$prefix" "$live"
+  done
+}
+
+rotate_tag_pair() {
+  local prefix="$1" live="$2" current
+  current="$(image_digest "${prefix}-current" || true)"
   if [[ "$current" == "$live" ]]; then
-    echo "==> prod-current is already ${live}"
+    echo "==> ${prefix}-current is already ${live}"
     return 0
   fi
   if [[ -n "$current" ]]; then
-    move_tag prod-previous "$current"
+    move_tag "${prefix}-previous" "$current"
   fi
-  move_tag prod-current "$live"
+  move_tag "${prefix}-current" "$live"
 }
 
 move_tag() {
@@ -353,4 +473,14 @@ resolve_mirror_release() {
     exit 1
   fi
   echo "sha-${source_sha}"
+}
+
+# resolve_prod_release vX.Y.Z [<source_sha>]: resolve_mirror_release with a source_sha (the
+# mirror), resolve_release_tag without one (the primary).
+resolve_prod_release() {
+  if (( $# >= 2 )); then
+    resolve_mirror_release "$1" "$2"
+  else
+    resolve_release_tag "${1:-}"
+  fi
 }

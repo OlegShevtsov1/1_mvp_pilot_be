@@ -35,6 +35,17 @@ RSpec.describe Task, type: :model do
 
       expect(subject.errors[:status]).to include("can't be blank")
     end
+
+    it 'starts a task as not started when no status is given' do
+      expect(described_class.new(name: 'Test', description: 'Test').status).to eq('not_started')
+    end
+
+    it 'rejects a status outside the three and names the allowed ones' do
+      task = build(:task, status: 'archived')
+
+      expect(task).not_to be_valid
+      expect(task.errors[:status]).to include('must be one of: not_started, in_progress, completed')
+    end
   end
 
   describe 'enums' do

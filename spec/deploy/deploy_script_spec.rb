@@ -12,7 +12,7 @@ RSpec.describe 'deploy/deploy.sh' do
   it 'refuses an unknown destination' do
     run_script('deploy.sh', 'staging') do |output, status|
       expect(status.exitstatus).to eq(2)
-      expect(output).to include("unknown destination 'staging' (supported: dev, prod)")
+      expect(output).to include("unknown destination 'staging' (supported: dev, prod, prod-srv)")
     end
   end
 
@@ -334,6 +334,155 @@ RSpec.describe 'deploy/deploy.sh' do
         expect(status.exitstatus).to eq(1)
         expect(output).to include("#{name}:#{version} is not in ECR (build it with Dev Deploy first)")
         expect(kamal_calls(root)).to be_empty
+      end
+    end
+
+    describe 'while the srv host is the live prod (after a Prod Switch)' do
+      let(:in_container) { "exec kamal app exec --reuse --roles=web -q curl -fsS --max-time 5 http://localhost:3000/health -c config/deploy.yml" }
+
+      def run_idle(env: { 'PROD_ACTIVE_TARGET' => 'srv' }, files: {}, &block)
+        run_script('deploy.sh', 'prod', 'v0.1.0', env: prod_env.merge(env), release: 'b' * 40,
+                                                  files: dev_image_files.merge('exec.txt' => %({"status":"ok","release":"#{DeploySandbox::SHA}"})).merge(files), &block)
+      end
+
+      it 'checks health inside the web container, never on the public URL, and skips the public smoke' do
+        run_idle do |output, status, root|
+          expect(status).to be_success, output
+          expect(kamal_calls(root)).to include(in_container)
+          expect(sandbox_log(root, 'curl.log')).to be_empty
+          expect(sandbox_log(root, 'smoke.log')).to be_empty
+          expect(output).to include('the AWS host is not the live prod')
+        end
+      end
+
+      it 'moves prod-aws-current, never prod-current' do
+        digests = "#{dev_image_files.fetch('digests')}prod-current sha256:live\nprod-aws-current sha256:older\n"
+        run_idle(files: { 'digests' => digests }) do |_output, status, root|
+          expect(status).to be_success
+          expect(crane_calls(root).grep(/\Atag /)).to eq([
+            "tag #{repo}@sha256:older prod-aws-previous",
+            "tag #{repo}@#{promoted_digest} prod-aws-current"
+          ])
+        end
+      end
+
+      it 'reads the live host from public DNS when PROD_ACTIVE_TARGET is unset' do
+        run_idle(env: {}, files: { 'hosts.txt' => public_dns('srv') }) do |_output, status, root|
+          expect(status).to be_success
+          expect(kamal_calls(root)).to include(in_container)
+          expect(crane_calls(root).grep(/\Atag /)).to eq([ "tag #{repo}@#{promoted_digest} prod-aws-current" ])
+        end
+      end
+    end
+
+    it 'refuses a PROD_ACTIVE_TARGET that is not aws or srv before touching anything' do
+      run_prod(env: prod_env.merge('PROD_ACTIVE_TARGET' => 'gcp')) do |output, status, root|
+        expect(status.exitstatus).to eq(2)
+        expect(output).to include("PROD_ACTIVE_TARGET must be aws or srv (got 'gcp')")
+        expect(kamal_calls(root)).to be_empty
+        expect(crane_calls(root)).to be_empty
+      end
+    end
+
+    it 'refuses before touching anything while public DNS is mid-change' do
+      run_prod(files: { 'hosts.txt' => "#{zone} 192.0.2.10\napp.#{zone} 192.0.2.20\ndev.#{zone} 192.0.2.20\n" }) do |output, status, root|
+        expect(status.exitstatus).to eq(1)
+        expect(output).to include('DNS is mid-change')
+        expect(kamal_calls(root)).to be_empty
+      end
+    end
+  end
+
+  context 'with the prod-srv destination' do
+    let(:name) { project_env.fetch('PROJECT_NAME') }
+    let(:prod_version) { "prod-sha-#{DeploySandbox::SHA}" }
+    let(:srv_env) { { 'PROD_SRV_VPN_IP' => '192.0.2.80', 'KAMAL_REGISTRY_SERVER' => 'registry.example.test' } }
+    let(:repo) { "registry.example.test/#{name}" }
+    let(:promoted_digest) { "sha256:prod#{version}" }
+
+    def crane_calls(root)
+      sandbox_log(root, 'crane.log').lines(chomp: true)
+    end
+
+    def run_srv(tag = 'v0.1.0', env: {}, files: {}, **options, &block)
+      run_script('deploy.sh', 'prod-srv', tag, env: srv_env.merge(env), files: dev_image_files.merge(files), **options, &block)
+    end
+
+    it 'sets up the promoted prod image with the srv config, never the AWS one' do
+      run_srv do |output, status, root|
+        expect(status).to be_success, output
+        expect(crane_calls(root)).to include("mutate #{repo}:#{version} --label service=#{name} -t #{repo}:#{prod_version}")
+        expect(kamal_calls(root).last).to eq("exec kamal setup --skip-push --version #{prod_version} -c config/deploy.prod-srv.yml")
+        expect(kamal_calls(root)).not_to include(%r{config/deploy\.yml})
+      end
+    end
+
+    it 'refuses to run without PROD_SRV_VPN_IP before touching anything, even with PROD_VPN_IP set' do
+      run_srv(env: { 'PROD_SRV_VPN_IP' => nil, 'PROD_VPN_IP' => '192.0.2.70' }) do |output, status, root|
+        expect(status.exitstatus).to eq(2)
+        expect(output).to include('PROD_SRV_VPN_IP is not set')
+        expect(kamal_calls(root)).to be_empty
+        expect(crane_calls(root)).to be_empty
+      end
+    end
+
+    it 'refuses anything but a release tag vX.Y.Z before touching anything' do
+      [ version, 'v1.2' ].each do |tag|
+        run_srv(tag) do |output, status, root|
+          expect(status.exitstatus).to eq(2), tag
+          expect(output).to include('is not a release tag vX.Y.Z')
+          expect(kamal_calls(root)).to be_empty
+          expect(crane_calls(root)).to be_empty
+        end
+      end
+    end
+
+    it "checks health through the srv host's shared proxy with the prod Host, never through public DNS" do
+      run_srv do |_output, _status, root|
+        expect(sandbox_log(root, 'curl.log').lines(chomp: true).uniq).to eq(
+          [ "--connect-to #{zone}:80:192.0.2.80:8091 -H X-Forwarded-Proto: https -fsS --max-time 5 http://#{zone}/health" ]
+        )
+      end
+    end
+
+    it 'runs the read-only smoke test through the shared proxy' do
+      run_srv do |output, status, root|
+        expect(status).to be_success, output
+        expect(sandbox_log(root, 'smoke.log').strip).to eq(
+          "http://#{zone} SMOKE_CONNECT_TO=#{zone}:80:192.0.2.80:8091 SMOKE_FORWARDED_PROTO=https SMOKE_READ_ONLY=1"
+        )
+      end
+    end
+
+    it 'also moves prod-current and prod-previous while the srv host is the live prod' do
+      digests = "#{dev_image_files.fetch('digests')}prod-current sha256:live\nprod-srv-current sha256:live\n"
+      run_srv(env: { 'PROD_ACTIVE_TARGET' => 'srv' }, files: { 'digests' => digests }) do |_output, status, root|
+        expect(status).to be_success
+        expect(crane_calls(root).grep(/\Atag /)).to eq([
+          "tag #{repo}@sha256:live prod-srv-previous",
+          "tag #{repo}@#{promoted_digest} prod-srv-current",
+          "tag #{repo}@sha256:live prod-previous",
+          "tag #{repo}@#{promoted_digest} prod-current"
+        ])
+      end
+    end
+
+    it 'moves prod-srv-current and prod-srv-previous, never the AWS tags' do
+      digests = "#{dev_image_files.fetch('digests')}prod-current sha256:aws\nprod-srv-current sha256:older\n"
+      run_srv(files: { 'digests' => digests }) do |_output, status, root|
+        expect(status).to be_success
+        expect(crane_calls(root).grep(/\Atag /)).to eq([
+          "tag #{repo}@sha256:older prod-srv-previous",
+          "tag #{repo}@#{promoted_digest} prod-srv-current"
+        ])
+      end
+    end
+
+    it 'never removes anything or touches the shared proxy' do
+      run_srv(containers: "#{name}-web-prod-sha-#{'b' * 40}\n") do |_output, status, root|
+        expect(status).to be_success
+        expect(kamal_calls(root).last).to eq("exec kamal deploy --skip-push --version #{prod_version} -c config/deploy.prod-srv.yml")
+        expect(kamal_calls(root)).not_to include(/remove|proxy/)
       end
     end
   end

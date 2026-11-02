@@ -3,25 +3,40 @@
 # report ✅ or ❌. It never rolls back; a person decides that (README "Releases").
 # Usage: deploy/release_watch.sh health sha-<40 hex>
 #          polls https://<PROJECT_ZONE>/health every WATCH_INTERVAL (30) seconds for WATCH_SECONDS
-#          (600); a check passes only when it reports status ok and that release. Prints since=<epoch>,
-#          checks=<n> and failed=<n> for GITHUB_OUTPUT, progress on stderr.
+#          (600, prod-srv 180); a check passes only when it reports status ok and that release. Prints
+#          since=<epoch>, checks=<n> and failed=<n> for GITHUB_OUTPUT, progress on stderr.
+#          WATCH_DESTINATION=prod-srv (with PROD_SRV_VPN_IP) polls the srv host's shared kamal-proxy
+#          over the VPN instead.
 #        deploy/release_watch.sh verdict
 #          env TAG, VERSION, CHECKS, FAILED, ISSUES_FILE (deploy/glitchtip_issues.sh output),
 #          GLITCHTIP_OUTCOME (that step's outcome), RUN_URL. Prints result=ok|fail and message=<one
 #          line for Telegram>. Issue titles appear only in the message; in Actions they are masked.
+#          WATCH_DESTINATION=prod-srv names the srv host and its rollback in the message.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 source deploy/_common.sh
 
 load_project_env
-# Set directly: select_destination prod needs the prod host, and this only uses the public URL.
-# shellcheck disable=SC2034 # read by base_url and app_curl
-DESTINATION=prod
+# Set directly: select_destination requires the SSH host, and only the prod-srv health checks need
+# a host address (the srv host's proxy); prod uses the public URL.
+DESTINATION="${WATCH_DESTINATION:-prod}"
+if [[ "$DESTINATION" != 'prod' && "$DESTINATION" != 'prod-srv' ]]; then
+  echo "error: unknown WATCH_DESTINATION '${DESTINATION}' (supported: prod, prod-srv)" >&2
+  exit 2
+fi
+# prod-srv holds the shared VPN lock for the whole watch, and every other job's vpn-up waits for it
+# only 300 s (CI_VPN_WAIT in 1_mvp_infra scripts/ci-vpn.sh): 6 checks take at most 210 s.
+if [[ "$DESTINATION" == 'prod-srv' ]]; then
+  WATCH_SECONDS="${WATCH_SECONDS:-180}"
+else
+  WATCH_SECONDS="${WATCH_SECONDS:-600}"
+fi
 
 watch_health() {
-  local version="$1" seconds="${WATCH_SECONDS:-600}" interval="${WATCH_INTERVAL:-30}" checks failed=0 body i url
+  local version="$1" seconds="$WATCH_SECONDS" interval="${WATCH_INTERVAL:-30}" checks failed=0 body i url
   require_version "$version"
+  [[ "$DESTINATION" != 'prod-srv' ]] || require_prod_srv_host
   url="$(base_url)/health"
   checks=$(( seconds / interval ))
   echo "since=$(date +%s)"
@@ -40,9 +55,14 @@ watch_health() {
 }
 
 verdict() {
-  local project="${PROJECT_NAME}-be-prod" sha="${VERSION:-}" head count named='' problems=() short_id title joined
+  local project="${PROJECT_NAME}-be-prod" sha="${VERSION:-}" where='' rollback head count named='' problems=() short_id title joined
   sha="${sha#sha-}"
-  head="release-watch ${project} ${TAG:-?}${sha:+ (${sha:0:7})}"
+  rollback='gh workflow run "Kamal Manage" --ref main -f action=rollback -f confirm=ROLLBACK-prod, or CONFIRM=ROLLBACK-prod deploy/rollback.sh prod'
+  if [[ "$DESTINATION" == 'prod-srv' ]]; then
+    where=' on srv'
+    rollback='gh workflow run "Kamal Manage" --ref main -f action=rollback -f target=srv -f confirm=ROLLBACK-prod, or CONFIRM=ROLLBACK-prod deploy/rollback.sh prod-srv'
+  fi
+  head="release-watch ${project}${where} ${TAG:-?}${sha:+ (${sha:0:7})}"
 
   if [[ ! "${CHECKS:-}" =~ ^[1-9][0-9]*$ || ! "${FAILED:-}" =~ ^[0-9]+$ ]]; then
     problems+=('the /health watch did not finish')
@@ -66,12 +86,12 @@ verdict() {
 
   if (( ${#problems[@]} == 0 )); then
     echo 'result=ok'
-    echo "message=✅ ${head}: clean for $(( ${WATCH_SECONDS:-600} / 60 )) minutes, ${CHECKS}/${CHECKS} health checks ok, 0 new GlitchTip issues ${RUN_URL:-}"
+    echo "message=✅ ${head}: clean for $(( WATCH_SECONDS / 60 )) minutes, ${CHECKS}/${CHECKS} health checks ok, 0 new GlitchTip issues ${RUN_URL:-}"
     return 0
   fi
   joined="$(printf '%s; ' "${problems[@]}")"
   echo 'result=fail'
-  echo "message=❌ ${head}: ${joined%; }. Prod was not rolled back automatically; to roll back: gh workflow run \"Kamal Manage\" --ref main -f action=rollback -f confirm=ROLLBACK-prod, or CONFIRM=ROLLBACK-prod deploy/rollback.sh prod ${RUN_URL:-}"
+  echo "message=❌ ${head}: ${joined%; }. Prod was not rolled back automatically; to roll back: ${rollback} ${RUN_URL:-}"
 }
 
 case "${1:-}" in

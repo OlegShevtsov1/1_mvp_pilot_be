@@ -6,7 +6,8 @@ RSpec.describe 'bin/wait-dev-deploy' do
   # Answers every gh call from a fixture file named after it: run list → list-<workflow file>,
   # run view <id> → view-<id>, run view --job <id> --log → log-<id>, api …/compare/<sha>...<run sha>
   # → compare-<run sha>, api …/commits/<branch> → head-<branch>, workflow run → dispatch.
-  # <key>.<n>, when it exists, answers the n-th call instead, so a run can change state between polls.
+  # <key>.<n>, when it exists, answers the n-th call instead, so a run can change state between polls;
+  # <key>.<n>.fail makes the n-th call fail with that file as gh's stderr.
   let(:gh_shim) do
     <<~'SH'
       #!/usr/bin/env bash
@@ -15,6 +16,7 @@ RSpec.describe 'bin/wait-dev-deploy' do
         local n
         n=$(( $(cat "$SANDBOX/$1.count" 2>/dev/null || echo 0) + 1 ))
         echo "${n}" > "$SANDBOX/$1.count"
+        if [[ -e "$SANDBOX/$1.${n}.fail" ]]; then cat "$SANDBOX/$1.${n}.fail" >&2; exit 1; fi
         if [[ -e "$SANDBOX/$1.${n}" ]]; then cat "$SANDBOX/$1.${n}"
         elif [[ -e "$SANDBOX/$1" ]]; then cat "$SANDBOX/$1"
         else echo "gh shim: no fixture $1" >&2; exit 1
@@ -38,15 +40,15 @@ RSpec.describe 'bin/wait-dev-deploy' do
     SH
   end
 
-  # A `date +%s` that advances one second per reading, so the number of polls before a timeout does
-  # not depend on wall time.
+  # A `date +%s` that advances one second per reading (or the seconds in date.step, when it exists),
+  # so the number of polls before a timeout does not depend on wall time.
   let(:clock_shim) do
     <<~'SH'
       #!/usr/bin/env bash
       [[ "$*" == +%s ]] || { echo "date shim: unexpected $*" >&2; exit 1; }
       n=$(( $(cat "$SANDBOX/date.count" 2>/dev/null || echo 0) + 1 ))
       echo "${n}" > "$SANDBOX/date.count"
-      echo "${n}"
+      echo $(( n * $(cat "$SANDBOX/date.step" 2>/dev/null || echo 1) ))
     SH
   end
 
@@ -64,8 +66,8 @@ RSpec.describe 'bin/wait-dev-deploy' do
     job('Gate', status == 'completed' ? 'success' : '', id: id * 10 + 1, status: status)
   end
 
-  def view(id, jobs, status: 'completed', head_sha: sha)
-    { status: status, conclusion: status == 'completed' ? 'success' : '', url: url(id), headSha: head_sha, jobs: jobs }.to_json
+  def view(id, jobs, status: 'completed', head_sha: sha, conclusion: status == 'completed' ? 'success' : '')
+    { status: status, conclusion: conclusion, url: url(id), headSha: head_sha, jobs: jobs }.to_json
   end
 
   def gate_only(id, gate_status: 'completed')
@@ -114,7 +116,8 @@ RSpec.describe 'bin/wait-dev-deploy' do
       }.merge(files).each { |name, content| File.write(File.join(root, name), content) }
       full_env = {
         'PATH' => "#{root}:#{ENV.fetch('PATH')}", 'SANDBOX' => root,
-        'WAIT_DEV_DEPLOY_INTERVAL' => '0', 'WAIT_DEV_DEPLOY_GRACE' => '0', 'WAIT_DEV_DEPLOY_TIMEOUT' => '30'
+        'WAIT_DEV_DEPLOY_INTERVAL' => '0', 'WAIT_DEV_DEPLOY_GRACE' => '0', 'WAIT_DEV_DEPLOY_TIMEOUT' => '30',
+        'WAIT_DEV_DEPLOY_RETRY_SECONDS' => '0'
       }.merge(env)
       output, status = Open3.capture2e(full_env, Rails.root.join('bin/wait-dev-deploy').to_s, *args)
       yield output, status, sandbox_log(root, 'gh.log')
@@ -144,6 +147,35 @@ RSpec.describe 'bin/wait-dev-deploy' do
     wait(sha, files: files) do |output, status|
       expect(status.exitstatus).to eq(1), output
       expect(output).to include('Build once (ECR)', url(12))
+    end
+  end
+
+  it 'names the failed job and the run once a duplicate run of the commit it waited for finished' do
+    files = {
+      'list-dev-deploy.yml' => runs(12, 11),
+      'view-12' => deploying(12, { 'Build once (ECR)' => 'failure', 'Deploy (VPN + Kamal)' => 'skipped' }),
+      'view-11.1' => view(11, [ gate(11, 'in_progress') ], status: 'in_progress'), 'view-11' => gate_only(11)
+    }
+
+    wait(sha, files: files) do |output, status, gh_log|
+      expect(status.exitstatus).to eq(1), output
+      expect(output).to include("error: Dev Deploy failed in Build once (ECR): #{url(12)}\n")
+      expect(gh_log.scan('run view 12').size).to eq(1)
+    end
+  end
+
+  it 'reads an unreadable Gate log of another run again on the next poll instead of failing' do
+    files = {
+      'list-dev-deploy.yml' => runs(12, row(10, title: 'Dev Deploy')),
+      'view-12.1' => deploying(12, { 'Deploy (VPN + Kamal)' => '', 'Report' => '' }, step: '', status: 'in_progress'),
+      'view-12' => deploying(12), 'view-10' => deploying(10, head_sha: 'a' * 40),
+      'log-101.1.fail' => "failed to get run log: log not found\n"
+    }
+
+    wait(sha, files: files) do |output, status, gh_log|
+      expect(status).to be_success, output
+      expect(output).to include("==> Dev Deploy deployed sha-#{sha}: #{url(12)}")
+      expect(gh_log.scan('run view --job 101 --log').size).to eq(1)
     end
   end
 
@@ -237,16 +269,145 @@ RSpec.describe 'bin/wait-dev-deploy' do
     end
   end
 
-  it 'fails as superseded once a newer run deployed a commit that contains it' do
+  it 'succeeds when its own run was superseded and a newer run deployed a commit that contains it' do
     files = {
       'list-dev-deploy.yml' => runs(row(13, 'c' * 40), 12),
       'view-13' => deploying(13, head_sha: 'c' * 40), 'view-12' => deploying(12, step: 'skipped'),
       "compare-#{'c' * 40}" => { status: 'ahead' }.to_json
     }
 
+    wait(sha, files: files) do |output, status, gh_log|
+      expect(status).to be_success, output
+      expect(output).to include("==> Dev Deploy deployed sha-#{sha} via #{'c' * 40}, a newer commit that contains it: #{url(13)}")
+      expect(output).not_to include('superseded')
+      expect(gh_log).not_to include('workflow run')
+    end
+  end
+
+  it 'succeeds via a newer commit when its own run was cancelled' do
+    cancelled = view(12, [
+      gate(12, 'completed'), *deploy_jobs[0..2].map { |name| job(name, 'success') },
+      job('Deploy (VPN + Kamal)', 'cancelled', [ { name: 'Deploy or roll back', conclusion: '' } ]), job('Report', 'success')
+    ], conclusion: 'cancelled')
+    files = {
+      'list-dev-deploy.yml' => runs(row(13, 'c' * 40), 12),
+      'view-13' => deploying(13, head_sha: 'c' * 40), 'view-12' => cancelled,
+      "compare-#{'c' * 40}" => { status: 'ahead' }.to_json
+    }
+
+    wait(sha, files: files) do |output, status, gh_log|
+      expect(status).to be_success, output
+      expect(output).to include("==> Dev Deploy deployed sha-#{sha} via #{'c' * 40}, a newer commit that contains it: #{url(13)}")
+      expect(gh_log).not_to include('workflow run')
+    end
+  end
+
+  it 'retries a GitHub 5xx and then succeeds' do
+    files = {
+      'list-dev-deploy.yml' => runs(12), 'view-12' => deploying(12),
+      'list-dev-deploy.yml.1.fail' => "HTTP 502: Bad Gateway (https://api.github.com/repos/owner/repo/actions/runs)\n"
+    }
+
+    wait(sha, files: files) do |output, status, gh_log|
+      expect(status).to be_success, output
+      expect(output).to include("==> Dev Deploy deployed sha-#{sha}: #{url(12)}")
+      expect(gh_log.lines.grep(/run list --workflow dev-deploy.yml/).size).to eq(2)
+    end
+  end
+
+  it 'retries a network error' do
+    files = {
+      'list-dev-deploy.yml' => runs(12), 'view-12' => deploying(12),
+      'view-12.1.fail' => "error connecting to api.github.com\n"
+    }
+
+    wait(sha, files: files) do |output, status, gh_log|
+      expect(status).to be_success, output
+      expect(gh_log.scan('run view 12 --json').size).to eq(2)
+    end
+  end
+
+  it 'gives up after 3 tries of a GitHub 5xx' do
+    files = { 'list-dev-deploy.yml' => runs(12) }
+    (1..3).each { |n| files["view-12.#{n}.fail"] = "HTTP 503: Service Unavailable\n" }
+
+    wait(sha, files: files) do |output, status, gh_log|
+      expect(status.exitstatus).to eq(1), output
+      expect(output).to include('HTTP 503', '3 tries')
+      expect(gh_log.scan('run view 12').size).to eq(3)
+    end
+  end
+
+  it 'does not retry a non-transient gh error' do
+    files = { 'list-dev-deploy.yml.1.fail' => "HTTP 404: Not Found\n" }
+
+    wait(sha, files: files) do |output, status, gh_log|
+      expect(status.exitstatus).to eq(1), output
+      expect(output).to include('HTTP 404')
+      expect(gh_log.lines.grep(/run list --workflow dev-deploy.yml/).size).to eq(1)
+    end
+  end
+
+  it 'does not retry a failed dispatch' do
+    wait(sha, files: { 'dispatch.1.fail' => "HTTP 502: Bad Gateway\n" }) do |output, status, gh_log|
+      expect(status.exitstatus).to eq(1), output
+      expect(output).to include('gh workflow run failed', 'HTTP 502')
+      expect(gh_log.lines.grep(/workflow run/).size).to eq(1)
+    end
+  end
+
+  it 'keeps waiting while a newer run of a commit that contains it deploys, then succeeds' do
+    files = {
+      'list-dev-deploy.yml' => runs(row(14, 'c' * 40), row(13, 'c' * 40), 12, 11),
+      'view-14' => gate_only(14), 'view-11' => gate_only(11), 'view-12' => deploying(12, step: 'skipped'),
+      'view-13.1' => deploying(13, { 'Deploy (VPN + Kamal)' => '', 'Report' => '' }, step: '', status: 'in_progress', head_sha: 'c' * 40),
+      'view-13' => deploying(13, head_sha: 'c' * 40),
+      "compare-#{'c' * 40}" => { status: 'ahead' }.to_json, 'head-develop' => { sha: 'c' * 40 }.to_json
+    }
+
+    wait(sha, files: files) do |output, status, gh_log|
+      expect(status).to be_success, output
+      expect(output).to include("deployed sha-#{sha} via #{'c' * 40}", url(13))
+      expect(gh_log.scan('run view 13 --json').size).to eq(2)
+      expect(gh_log).not_to include('workflow run')
+    end
+  end
+
+  it 'succeeds as soon as the Deploy job deployed, before Report and Notify finished' do
+    files = {
+      'list-dev-deploy.yml' => runs(12, 11), 'view-11' => gate_only(11),
+      'view-12' => deploying(12, { 'Report' => '' }, status: 'in_progress')
+    }
+
+    wait(sha, files: files) do |output, status, gh_log|
+      expect(status).to be_success, output
+      expect(output).to include("==> Dev Deploy deployed sha-#{sha}: #{url(12)}")
+      expect(gh_log.scan('run view 12').size).to eq(1)
+    end
+  end
+
+  it 'fails on its own failed run even when a newer run deployed a commit that contains it' do
+    files = {
+      'list-dev-deploy.yml' => runs(row(13, 'c' * 40), 12),
+      'view-13' => deploying(13, head_sha: 'c' * 40),
+      'view-12' => deploying(12, { 'Deploy (VPN + Kamal)' => 'failure' }, step: 'failure'),
+      "compare-#{'c' * 40}" => { status: 'ahead' }.to_json
+    }
+
     wait(sha, files: files) do |output, status|
       expect(status.exitstatus).to eq(1), output
-      expect(output).to include('superseded', url(13), 'c' * 40)
+      expect(output).to include('Dev Deploy failed in Deploy (VPN + Kamal)', url(12))
+      expect(output).not_to include('==>')
+    end
+  end
+
+  it 'times out after 1440 s by default, inside the factory 1500 s limit on its deploy command' do
+    files = { 'date.step' => '1000', 'head-develop' => { sha: 'c' * 40 }.to_json }
+
+    wait(sha, files: files, env: { 'WAIT_DEV_DEPLOY_TIMEOUT' => nil }) do |output, status, gh_log|
+      expect(status.exitstatus).to eq(1), output
+      expect(output).to include('timed out after 1440s')
+      expect(gh_log).not_to include('workflow run')
     end
   end
 
@@ -264,17 +425,20 @@ RSpec.describe 'bin/wait-dev-deploy' do
     end
   end
 
-  it 'does not call a deployed run of an unrelated commit superseding' do
-    files = {
-      'list-dev-deploy.yml' => runs(row(13, 'c' * 40)), 'view-13' => deploying(13, head_sha: 'c' * 40),
-      "compare-#{'c' * 40}" => { status: 'diverged' }.to_json, 'head-develop' => { sha: 'd' * 40 }.to_json
-    }
+  %w[behind identical diverged].each do |compare_status|
+    it "does not accept a deployed run whose commit is #{compare_status} against the target" do
+      files = {
+        'list-dev-deploy.yml' => runs(row(13, 'c' * 40)), 'view-13' => deploying(13, head_sha: 'c' * 40),
+        "compare-#{'c' * 40}" => { status: compare_status }.to_json, 'head-develop' => { sha: 'd' * 40 }.to_json
+      }
 
-    wait(sha, files: files, env: { 'WAIT_DEV_DEPLOY_TIMEOUT' => '0' }) do |output, status, gh_log|
-      expect(status.exitstatus).to eq(1), output
-      expect(output).to include('timed out')
-      expect(output).not_to include('superseded')
-      expect(gh_log).not_to include('workflow run')
+      wait(sha, files: files, env: { 'WAIT_DEV_DEPLOY_TIMEOUT' => '0' }) do |output, status, gh_log|
+        expect(status.exitstatus).to eq(1), output
+        expect(output).to include('timed out')
+        expect(output).not_to include('==>')
+        expect(output).not_to include('superseded')
+        expect(gh_log).not_to include('workflow run')
+      end
     end
   end
 
