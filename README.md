@@ -15,7 +15,7 @@ Archon factory) in [1_mvp_sdlc](https://github.com/OlegShevtsov1/1_mvp_sdlc).
 
 ## Architecture
 
-Rails 7.2 API-only on Puma, PostgreSQL 16 for users, projects and tasks, Redis 7 as the Rails cache for list
+Rails 8.0 API-only on Puma, PostgreSQL 16 for users, projects and tasks, Redis 7 as the Rails cache for list
 endpoints, and GlitchTip (Sentry protocol) for error tracking; the frontend is a separate SPA that calls the API
 over HTTPS with a bearer access token, falling back until the cutoff to the legacy `X-User-Email`/`X-User-Token`
 headers (ADR-0005), and relays its own browser errors through the API's
@@ -46,7 +46,7 @@ environments go to GlitchTip through the Sentry SDK ([Error tracking](#error-tra
 ## Requirements
 
 - Ruby 3.3.6
-- Rails 7.2.3 (see `Gemfile`)
+- Rails 8.0.5 (see `Gemfile`)
 - PostgreSQL
 - Docker (optional)
 

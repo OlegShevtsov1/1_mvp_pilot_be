@@ -22,6 +22,20 @@ its entry under `[Unreleased]` (checked by `changelog-check`); a release moves t
 
 ### Security
 
+## [0.5.1] - 2026-11-04
+
+### Fixed
+
+- Prod Switch runs `prod-dns` and `finalize` when the AWS standby is skipped; until now a switch without a standby
+  (every `to=srv`) skipped both and aborted after the data move, leaving DNS untouched (PILOT-634).
+
+### Security
+
+- Upgrade Rails from 7.2 to 8.0 (8.0.5 with its second security patch; GHSA-f3w6-w445-fwh9, GHSA-v924-7rp8-4mxh,
+  GHSA-wm3x-v3qw-4jh3, GHSA-8474-xrp6-wh69 and 14 more actionpack, actionview, activestorage and actionmailbox
+  advisories), so bundler-audit passes again; `simple_token_authentication` now comes from its upstream commit with
+  Rails 8 support and the unused `redis-rails` is removed (PILOT-637).
+
 ## [0.5.0] - 2026-11-04
 
 ### Added

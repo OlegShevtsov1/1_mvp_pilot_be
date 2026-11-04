@@ -527,6 +527,10 @@ RSpec.describe 'prod workflows' do
       dns = jobs.fetch('prod-dns')
       expect(dns.fetch('environment')).to eq('prod-dns')
       expect(needs(dns)).to include('data')
+      expect(dns.fetch('if')).to start_with('${{ !cancelled() && ')
+      { 'success' => true, 'skipped' => false, 'failure' => false }.each do |result, runs|
+        expect(condition(dns.fetch('if'), 'needs' => { 'data' => { 'result' => result } })).to be(runs), result
+      end
       expect(dns.fetch('outputs')).to eq('touched' => '${{ steps.touched.outputs.touched }}')
       expect(dns.fetch('steps').first).to include('id' => 'touched', 'run' => 'echo "touched=true" >> "${GITHUB_OUTPUT}"')
       switch = step(dns, 'Switch DNS through the infra prod stack')
@@ -609,6 +613,16 @@ RSpec.describe 'prod workflows' do
       expect(runs.call('failure', 'skipped')).to be(false)
     end
 
+    # standby is skipped on every switch that needs no AWS standby, and GitHub's implicit success() skips every job
+    # downstream of a skipped job unless its if: uses a status function.
+    it 'gives every job downstream of the standby an if: with !cancelled() or always(), so a skipped standby skips nothing' do
+      downstream = jobs.keys.select { |name| transitive_needs(jobs, name).include?('standby') }
+      expect(downstream).to include('target', 'data', 'prod-dns', 'abort', 'finalize')
+      downstream.each do |name|
+        expect(jobs.fetch(name)['if'].to_s).to match(/\A(\$\{\{\s*)?(!cancelled\(\)|always\(\))/), name
+      end
+    end
+
     it 'waits for the AWS instance after a standby, re-probes it, and dispatches Kamal Deploy only outside the VPN' do
       steps = jobs.fetch('target').fetch('steps')
       wait = script_step('target', 'wait-host')
@@ -656,7 +670,10 @@ RSpec.describe 'prod workflows' do
       expect(public_checks).to be < up
       expect(up).to be < stop
       expect(needs(finalize)).to include('prod-dns')
-      expect(finalize).not_to have_key('if')
+      expect(finalize.fetch('if')).to start_with('${{ !cancelled() && ')
+      { 'success' => true, 'skipped' => false, 'failure' => false, 'cancelled' => false }.each do |result, runs|
+        expect(condition(finalize.fetch('if'), 'needs' => { 'prod-dns' => { 'result' => result } })).to be(runs), result
+      end
       expect(finalize.fetch('env')).to include('PROD_ACTIVE_TARGET' => '${{ needs.guard.outputs.to }}')
     end
 
