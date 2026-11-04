@@ -209,7 +209,7 @@ RSpec.describe 'deploy/prod_switch.sh' do
     it 'prints the dump, the restore into the recreated target database, the counts and the boot, and runs nothing' do
       dry('move-data', 'prod', 'prod-srv', version) do |output, status, root|
         expect(status).to be_success, output
-        expect(dry_lines(output)).to eq([
+        expect(dry_lines(output)).to match([
           "[dry-run] on the AWS host: docker exec #{name}-db pg_dump -U postgres -d #{name}_prod -Fc",
           "[dry-run] on the srv host: #{stop_app}",
           "[dry-run] on the srv host: docker exec #{name}-db dropdb -U postgres --if-exists --force #{name}_prod",
@@ -217,10 +217,12 @@ RSpec.describe 'deploy/prod_switch.sh' do
           "[dry-run] on the srv host: docker exec -i #{name}-db pg_restore -U postgres -d #{name}_prod --no-owner --exit-on-error",
           "[dry-run] on the AWS host: docker exec -i #{name}-db psql -U postgres -d #{name}_prod -At -v ON_ERROR_STOP=1",
           "[dry-run] on the srv host: docker exec -i #{name}-db psql -U postgres -d #{name}_prod -At -v ON_ERROR_STOP=1",
+          a_string_matching(%r{\A\[dry-run\] on the srv host: keep the final dump as ~/backups/#{name}-prod-\d{8}T\d{6}Z-from-aws\.dump \(owner #{name}-prod, mode 600\) and print its path, size and sha256\z}),
           "[dry-run] bundle exec kamal app boot --version #{release} -c config/deploy.prod-srv.yml",
           "[dry-run] wait until /health on the srv host reports release #{DeploySandbox::SHA}"
         ])
         expect(host_logs(root).values).to all(be_empty)
+        expect(Dir[File.join(root, 'home-*')]).to be_empty
       end
     end
 
@@ -444,14 +446,21 @@ RSpec.describe 'deploy/prod_switch.sh' do
     end
     let(:data_files) { { 'dump.bin' => "PGDMP-binary-archive\n", "counts-#{aws}.txt" => counts, "counts-#{srv}.txt" => counts } }
 
+    let(:kept_name) { /\A#{name}-prod-\d{8}T\d{6}Z-from-aws\.dump\z/ }
+
     def move(files: {}, &block)
       switch('move-data', 'prod', 'prod-srv', version, files: data_files.merge(files), &block)
+    end
+
+    def kept_dumps(root)
+      Dir[File.join(root, "home-#{srv}", 'backups', '*')]
     end
 
     it 'restores the final dump into the recreated target database, checks the counts, then boots the target' do
       move do |output, status, root|
         expect(status).to be_success, output
-        expect(ssh_commands(root)).to eq([
+        expect(ssh_commands(root).size).to eq(8)
+        expect(ssh_commands(root).first(7)).to eq([
           "ubuntu@#{aws} docker exec #{name}-db pg_dump -U postgres -d #{name}_prod -Fc stdin=0",
           "#{name}-prod@#{srv} #{stop_app} stdin=0",
           "#{name}-prod@#{srv} docker exec #{name}-db dropdb -U postgres --if-exists --force #{name}_prod stdin=0",
@@ -460,8 +469,46 @@ RSpec.describe 'deploy/prod_switch.sh' do
           "ubuntu@#{aws} docker exec -i #{name}-db psql -U postgres -d #{name}_prod -At -v ON_ERROR_STOP=1 stdin=#{count_sql.bytesize}",
           "#{name}-prod@#{srv} docker exec -i #{name}-db psql -U postgres -d #{name}_prod -At -v ON_ERROR_STOP=1 stdin=#{count_sql.bytesize}"
         ])
+        expect(ssh_commands(root)[7]).to match(/\A#{name}-prod@#{srv} .*\/backups.*#{name}-prod-\d{8}T\d{6}Z-from-aws\.dump.* stdin=21\z/)
         expect(kamal_calls(root)).to eq([ "exec kamal app boot --version #{release} -c config/deploy.prod-srv.yml" ])
         expect(output).to include('2 tables, every row count matches', 'The data is on the srv host')
+      end
+    end
+
+    it 'keeps the final dump on the target, owner-only, and prints its path, size and sha256' do
+      move do |output, status, root|
+        expect(status).to be_success, output
+        expect(kept_dumps(root).size).to eq(1)
+        file = kept_dumps(root).first
+        expect(File.basename(file)).to match(kept_name)
+        expect(File.read(file)).to eq("PGDMP-binary-archive\n")
+        expect(File.stat(file).mode & 0o777).to eq(0o600)
+        expect(File.stat(File.dirname(file)).mode & 0o777).to eq(0o700)
+        expect(File.stat(file).uid).to eq(Process.uid)
+        expect(output).to include(
+          "Kept the final dump on the srv host: #{file}", '21 bytes', 'mode 600',
+          Digest::SHA256.hexdigest("PGDMP-binary-archive\n")
+        )
+        expect(output).not_to include('PGDMP-binary-archive')
+        expect(File).not_to exist("#{file}.part")
+      end
+    end
+
+    it 'stops before DNS without booting the target when the dump cannot be kept' do
+      move(files: { "home-#{srv}" => "not a directory\n" }) do |output, status, root|
+        expect(status.exitstatus).to eq(1)
+        expect(output).to include('could not keep the final dump on the srv host', 'DNS was not touched')
+        expect(output).not_to include('The data is on')
+        expect(kamal_calls(root)).not_to include(/app boot/)
+      end
+    end
+
+    it 'stops before DNS without booting the target when the kept dump differs from the restored one' do
+      move(files: { "ssh-#{srv}.truncate" => '' }) do |output, status, root|
+        expect(status.exitstatus).to eq(1)
+        expect(output).to include('the dump kept on the srv host differs from the restored one', 'DNS was not touched')
+        expect(output).not_to include('Kept the final dump', 'The data is on')
+        expect(kamal_calls(root)).not_to include(/app boot/)
       end
     end
 

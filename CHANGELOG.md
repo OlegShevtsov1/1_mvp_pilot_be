@@ -22,6 +22,21 @@ its entry under `[Unreleased]` (checked by `changelog-check`); a release moves t
 
 ### Security
 
+## [0.5.0] - 2026-11-04
+
+### Added
+
+- Prod Switch keeps the final `pg_dump` of the old prod on the target host
+  (`~/backups/<project>-prod-<UTC time>-from-<source>.dump`, owner-only, never deleted) and logs its path, size
+  and sha256; a dump that cannot be kept fails the `data` step before DNS (PILOT-627).
+
+### Security
+
+- Update nokogiri to 1.19.5 (GHSA-3w22-6jfg-527w, GHSA-4p39-36wj-23h4, GHSA-v995-44v6-5fqm), rails-html-sanitizer
+  to 1.7.2 (GHSA-cpgf-5mjf-73p7, GHSA-h7wh-q2qr-458c) and loofah to 2.25.3 (GHSA-345x-3rq2-jfrm, GHSA-h6v6-rg66-fqj4,
+  GHSA-jcff-cj73-4w4f, GHSA-m3x9-938q-5767, GHSA-mf2j-8f84-cc9q, GHSA-p9wj-w8xq-vjx6), so bundler-audit passes again
+  (PILOT-625).
+
 ## [0.4.0] - 2026-11-02
 
 ### Added

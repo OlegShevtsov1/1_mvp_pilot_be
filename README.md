@@ -179,6 +179,11 @@ deploy command),
 trigger) and `WAIT_DEV_DEPLOY_RETRY_SECONDS` (5, backoff base of the 3 tries of a read after a GitHub 5xx or
 network error; the dispatch is never retried) tune it.
 
+Factory runs pause twice for the operator (`.archon/factory-profile.yaml`, sdlc v0.10.0): `merge_approval:
+operator` stops at `pr-approve` after a green merge gate and merges only the head the operator approved
+(Telegram, or the label `operator-approved`); `qa_dev` stops at `qa-dev` after the dev deploy with the deployed
+commit and the dev URL. be has no e2e workflow (`e2e_workflow: ""`) and no pages to shoot.
+
 From a console on the VPN, with the secrets below exported, AWS credentials that can pull from
 ECR and an SSH key accepted by the dev host:
 
@@ -439,10 +444,17 @@ the guards run, every other command that would touch a host, ECR, DNS or infra i
 2. `data`: the target must run the release. The live prod goes into Kamal maintenance (kamal-proxy answers 503 for `<PROJECT_NAME>` only,
    nothing else on a shared proxy) and its app containers stop (`docker stop`, not `kamal app stop`,
    which would also remove the service from kamal-proxy and end the 503). A final `pg_dump` of
-   `<PROJECT_NAME>_prod` goes over SSH through the runner (owner-only temp file, never uploaded,
+   `<PROJECT_NAME>_prod` goes over SSH through the runner (its copy there is an owner-only temp file,
    deleted at exit) into the target's recreated database (`dropdb --force`, `createdb`, `pg_restore`),
-   and the exact row counts of every table in `public` must match on both sides. Then the target's
-   app boots on the release. Telegram asks for the `prod-dns` approval (GitHub notifies the reviewers
+   and the exact row counts of every table in `public` must match on both sides. That same dump is
+   then kept on the target host as `~/backups/<PROJECT_NAME>-prod-<YYYYmmddTHHMMSSZ>-from-<aws|srv>.dump`
+   of the SSH user (`<PROJECT_NAME>-prod` on srv, `ubuntu` on AWS), directory 700, file 600, never
+   deleted or rotated by any workflow; the log prints its path, size, owner, mode and sha256, never its
+   content. It is the backup of the old prod, for example once the AWS instance is deleted; check it on
+   the host with `sha256sum <path>` and `docker exec -i <PROJECT_NAME>-db pg_restore --list < <path>`
+   (read-only). When it cannot be kept, or its sha256 differs, the step fails before the boot and the
+   abort runs; a dry run prints it as `[dry-run]` and keeps nothing. Then the target's app boots on the
+   release. Telegram asks for the `prod-dns` approval (GitHub notifies the reviewers
    too, and a failed message does not fail the job); prod stays in maintenance until DNS moves, so
    approve promptly.
 3. `prod-dns`: in the GitHub environment `prod-dns`, whose required reviewer is the operator. With

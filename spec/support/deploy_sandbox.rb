@@ -104,15 +104,24 @@ module DeploySandbox
     SH
     # Logs the arguments and the size of stdin to ssh.log. Answers per host address (the part after
     # user@): pg_dump with dump.bin, psql with counts-<address>.txt, docker ps with fe-<address>.txt;
-    # fails like an unreachable host when ssh-<address>.fail exists.
+    # the backup store (a command with /backups) runs for real with HOME=home-<address>, on only the
+    # first 5 bytes of stdin when ssh-<address>.truncate exists; fails like an unreachable host when
+    # ssh-<address>.fail exists.
     'ssh' => <<~'SH',
       #!/usr/bin/env bash
       cmd="${!#}"
       host=''
       for arg in "$@"; do [[ "$arg" == *@* ]] && host="${arg#*@}"; done
-      echo "$* stdin=$(wc -c | tr -d ' ')" >> "$SANDBOX/ssh.log"
+      in="$(mktemp "$SANDBOX/ssh-stdin.XXXXXX")"
+      cat > "$in"
+      echo "$* stdin=$(wc -c < "$in" | tr -d ' ')" >> "$SANDBOX/ssh.log"
       [[ -e "$SANDBOX/ssh-${host}.fail" ]] && exit 255
       case "$cmd" in
+        *'/backups'*)
+          mkdir -p "$SANDBOX/home-${host}" 2> /dev/null || true
+          [[ -e "$SANDBOX/ssh-${host}.truncate" ]] && head -c 5 "$in" > "$in.cut" && mv "$in.cut" "$in"
+          HOME="$SANDBOX/home-${host}" sh -c "$cmd" < "$in"
+          exit $? ;;
         *pg_dump*) cat "$SANDBOX/dump.bin" ;;
         *psql*) cat "$SANDBOX/counts-${host}.txt" ;;
         *'docker ps'*) cat "$SANDBOX/fe-${host}.txt" 2>/dev/null ;;
