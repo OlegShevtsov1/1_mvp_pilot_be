@@ -2,7 +2,7 @@ require 'rails_helper'
 
 # bundler-audit in CI checks the lock against an advisory database that changes under it; these
 # floors keep the patched versions from being lost by a later lock change (PILOT-299, PILOT-556,
-# PILOT-589).
+# PILOT-589, PILOT-625).
 RSpec.describe 'Gemfile.lock' do
   let(:locked) do
     Bundler::LockfileParser.new(Rails.root.join('Gemfile.lock').read).specs.to_h { |spec| [ spec.name, spec.version ] }
@@ -22,5 +22,17 @@ RSpec.describe 'Gemfile.lock' do
 
   it 'locks addressable at 2.9.1 or later, patched for GHSA-qq38-m9mg-xjj5 and six more addressable advisories' do
     expect(locked.fetch('addressable')).to be >= Gem::Version.new('2.9.1')
+  end
+
+  it 'locks nokogiri at 1.19.5 or later, patched for GHSA-3w22-6jfg-527w and two more nokogiri advisories' do
+    expect(locked.fetch('nokogiri')).to be >= Gem::Version.new('1.19.5')
+  end
+
+  it 'locks rails-html-sanitizer at 1.7.2 or later, patched for GHSA-cpgf-5mjf-73p7 and GHSA-h7wh-q2qr-458c' do
+    expect(locked.fetch('rails-html-sanitizer')).to be >= Gem::Version.new('1.7.2')
+  end
+
+  it 'locks loofah at 2.25.3 or later, patched for GHSA-345x-3rq2-jfrm and five more loofah advisories' do
+    expect(locked.fetch('loofah')).to be >= Gem::Version.new('2.25.3')
   end
 end

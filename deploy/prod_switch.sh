@@ -30,7 +30,9 @@
 #          service stays registered and paused in kamal-proxy.
 #        deploy/prod_switch.sh move-data <from-dest> <to-dest> sha-<sha>
 #          step 2: a final dump of the live database, restored into the target's recreated one,
-#          the row counts of every public table compared, then the target's app booted.
+#          the row counts of every public table compared, then that dump kept on the target
+#          (~/backups/<project>-prod-<UTC time>-from-<source>.dump, owner-only, never deleted) and
+#          the target's app booted.
 #        deploy/prod_switch.sh compare-counts <source counts> <target counts>
 #        deploy/prod_switch.sh abort-check <from-dest>
 #          refuses an abort unless public DNS shows the source and this run's prod-dns job never
@@ -136,14 +138,17 @@ kamal_on() {
 # trust Kamal's own SSH gives these hosts on a fresh runner (net-ssh accepts a new key), over the
 # authenticated VPN; a pinned key would refuse an AWS instance infra re-created.
 remote() {
-  local dest="$1" cmd="$2" user=ubuntu host
+  local dest="$1" cmd="$2" host
   if dry_run; then
     echo "[dry-run] on $(host_role "$dest"): ${cmd}" >&2
     return 0
   fi
-  [[ "$dest" == 'prod' ]] || user="${PROJECT_NAME}-prod"
   host="$(host_address "$dest")"
-  ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "${user}@${host}" "$cmd"
+  ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$(ssh_user "$dest")@${host}" "$cmd"
+}
+
+ssh_user() {
+  if [[ "$1" == 'prod' ]]; then echo ubuntu; else echo "${PROJECT_NAME}-prod"; fi
 }
 
 # stop_app <dest>: stops every running app container (web and cron) of the service. Not
@@ -319,16 +324,40 @@ compare_counts() {
   echo "==> $(grep -c . "$source") tables, every row count matches"
 }
 
+# keep_dump <to-dest> <name>: stores the restored dump (WORK_DIR/dump) as ~/backups/<name> of the
+# target's SSH user, owner-only, checks its sha256 against the restored dump and prints its path,
+# size and sha256. Written as <name>.part and renamed, so a broken upload never looks like a backup.
+# Runs in the SSH login shell, so POSIX sh only.
+keep_dump() {
+  local dest="$1" name="$2" cmd out path size owner mode sha
+  if dry_run; then
+    echo "[dry-run] on $(host_role "$dest"): keep the final dump as ~/backups/${name} (owner $(ssh_user "$dest"), mode 600) and print its path, size and sha256" >&2
+    return 0
+  fi
+  cmd="set -eu; umask 077; d=\"\$HOME/backups\"; mkdir -p \"\$d\"; chmod 700 \"\$d\"; f=\"\$d/${name}\";"
+  cmd+=" cat > \"\$f.part\"; mv \"\$f.part\" \"\$f\"; chmod 600 \"\$f\";"
+  cmd+=" printf '%s %s %s\\n' \"\$f\" \"\$(stat -c '%s %U %a' \"\$f\")\" \"\$(sha256sum < \"\$f\" | cut -d ' ' -f 1)\""
+  out="$(remote "$dest" "$cmd" < "${WORK_DIR}/dump")" ||
+    fail "could not keep the final dump on $(host_role "$dest"); DNS was not touched"
+  read -r path size owner mode sha <<< "$out"
+  if [[ -z "$sha" || "$sha" != "$(sha256sum < "${WORK_DIR}/dump" | cut -d ' ' -f 1)" ]]; then
+    fail "the dump kept on $(host_role "$dest") differs from the restored one; DNS was not touched"
+  fi
+  echo "==> Kept the final dump on $(host_role "$dest"): ${path} (${size} bytes, owner ${owner}, mode ${mode}, sha256 ${sha}); never deleted"
+}
+
 cmd_move_data() {
-  local from_dest="$1" to_dest="$2" version="$3" db container
+  local from_dest="$1" to_dest="$2" version="$3" db container name
   require_two_hosts "$from_dest" "$to_dest"
   require_version "$version"
   setup_kamal_env
   db="${PROJECT_NAME}_prod"
   container="${PROJECT_NAME}-db"
-  # The dump is prod data: owner-only, never uploaded, deleted on exit.
+  # The dump is prod data: the runner's copy is owner-only and deleted on exit; the copy kept on
+  # the target (keep_dump) is owner-only and never deleted.
   WORK_DIR="$(umask 077 && mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/prod-switch.XXXXXX")"
 
+  name="${PROJECT_NAME}-prod-$(date -u +%Y%m%dT%H%M%SZ)-from-$(target_of "$from_dest").dump"
   echo "==> Final dump of ${db} on $(host_role "$from_dest")"
   remote "$from_dest" "docker exec ${container} pg_dump -U postgres -d ${db} -Fc" < /dev/null > "${WORK_DIR}/dump"
   if ! dry_run && [[ "$(head -c 5 "${WORK_DIR}/dump")" != 'PGDMP' ]]; then
@@ -348,6 +377,7 @@ cmd_move_data() {
   if ! dry_run && ! compare_counts "${WORK_DIR}/source.counts" "${WORK_DIR}/target.counts"; then
     fail "the restored database differs from the live one; DNS was not touched"
   fi
+  keep_dump "$to_dest" "$name"
 
   echo "==> Booting prod-${version} on $(host_role "$to_dest")"
   kamal_on "$to_dest" app boot --version "prod-${version}"
