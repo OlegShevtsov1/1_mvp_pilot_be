@@ -16,7 +16,7 @@ reflects_commit: "144e68b"
 ## Stack
 
 - Language / runtime: Ruby 3.3.6 (`.ruby-version`, `Dockerfile:3`)
-- Frameworks: Rails 7.2, API only (`config/application.rb:30`, `ActionController::API` in
+- Frameworks: Rails 8.0, API only (`config/application.rb:30`, `ActionController::API` in
   `app/controllers/application_controller.rb:1`); Devise + `simple_token_authentication` (`app/models/user.rb:4`,
   `app/models/user.rb:7`); CanCanCan (`app/models/ability.rb:1`); active_model_serializers 0.10
   (`app/serializers/base_serializer.rb:1`); rswag (`spec/swagger_helper.rb:4`, contract
@@ -34,7 +34,7 @@ reflects_commit: "144e68b"
 C4Container
     title Current containers — 1_mvp_pilot_be
     Person(client, "API client", "The separate frontend repository, or any HTTP client")
-    Container(api, "Pilot API", "Rails 7.2 API-only, Puma", "Users, token sign-in, projects, tasks, health, error tunnel")
+    Container(api, "Pilot API", "Rails 8.0 API-only, Puma", "Users, token sign-in, projects, tasks, health, error tunnel")
     ContainerDb(pg, "PostgreSQL 16", "PostgreSQL", "users, projects, tasks")
     ContainerDb(redis, "Redis 7", "Redis", "Rails cache for project and task lists")
     System_Ext(glitchtip, "GlitchTip", "Error tracking, Sentry protocol")
@@ -95,9 +95,10 @@ C4Container
   eager loading with `includes` (`app/services/projects/index.rb:32`), counter caches (`app/models/project.rb:7`),
   list results cached in `Rails.cache` with a key built from count and latest `updated_at`
   (`app/services/projects/index.rb:26`, `app/services/tasks/index.rb:28`).
-- **Migrations:** `db/migrate/<timestamp>_<name>.rb`, `ActiveRecord::Migration[7.2]`, `change` with `t.references
-  ... foreign_key: true` and `t.timestamps` (`db/migrate/20250313163641_create_tasks.rb:1`); the schema of record
-  is `db/schema.rb` (`db/schema.rb:13`). Existing migrations are append-only (CLAUDE.md Hard Rules).
+- **Migrations:** `db/migrate/<timestamp>_<name>.rb`, `ActiveRecord::Migration[8.0]` for new migrations
+  (existing ones keep `[7.2]`), `change` with `t.references ... foreign_key: true` and `t.timestamps`
+  (`db/migrate/20250313163641_create_tasks.rb:1`); the schema of record is `db/schema.rb` (`db/schema.rb:13`).
+  Existing migrations are append-only (CLAUDE.md Hard Rules).
 - **Tests:** RSpec with FactoryBot (`spec/factories/projects.rb`) and shoulda-matchers
   (`spec/models/project_spec.rb:5`); service specs (`spec/services/projects/create_spec.rb:1`); controller specs
   (`spec/controllers/api/v1/projects_controller_spec.rb`); rswag request specs that generate the contract

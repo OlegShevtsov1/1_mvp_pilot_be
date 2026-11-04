@@ -518,9 +518,11 @@ jobs:
 
   # Step 3. The environment prod-dns has the operator as required reviewer: the approval is the
   # operator's OK. touched=true is set before anything else, so abort never runs once DNS may move.
+  # !cancelled(): the implicit success() would skip it whenever the standby was skipped.
   prod-dns:
     name: Switch DNS (operator approval)
     needs: [guard, data]
+    if: ${{ !cancelled() && needs.data.result == 'success' }}
     runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
     environment: prod-dns
     timeout-minutes: 90
@@ -632,6 +634,7 @@ jobs:
   finalize:
     name: Check the public URLs, move the tags, stop the old host
     needs: [guard, prod-dns]
+    if: ${{ !cancelled() && needs.prod-dns.result == 'success' }}
     runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
     environment: prod
     timeout-minutes: 40

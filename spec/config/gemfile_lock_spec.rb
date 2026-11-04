@@ -2,7 +2,7 @@ require 'rails_helper'
 
 # bundler-audit in CI checks the lock against an advisory database that changes under it; these
 # floors keep the patched versions from being lost by a later lock change (PILOT-299, PILOT-556,
-# PILOT-589, PILOT-625).
+# PILOT-589, PILOT-625, PILOT-637).
 RSpec.describe 'Gemfile.lock' do
   let(:locked) do
     Bundler::LockfileParser.new(Rails.root.join('Gemfile.lock').read).specs.to_h { |spec| [ spec.name, spec.version ] }
@@ -34,5 +34,10 @@ RSpec.describe 'Gemfile.lock' do
 
   it 'locks loofah at 2.25.3 or later, patched for GHSA-345x-3rq2-jfrm and five more loofah advisories' do
     expect(locked.fetch('loofah')).to be >= Gem::Version.new('2.25.3')
+  end
+
+  # Four-part versions are spelled as segments: scripts/check-public-repo.sh reads a dotted one as an IPv4 literal.
+  it 'locks rails at 8.0.5 patch 2 or later, patched for GHSA-f3w6-w445-fwh9 and seventeen more Rails advisories' do
+    expect(locked.fetch('rails')).to be >= Gem::Version.new([ 8, 0, 5, 2 ].join('.'))
   end
 end

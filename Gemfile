@@ -2,24 +2,25 @@ source 'https://rubygems.org'
 git_source(:github) { |repo| "https://github.com/#{repo}.git" }
 
 ruby '~> 3.3'
-gem 'rails', '~> 7.2.3', '>= 7.2.3.2'
+gem 'rails', '~> 8.0.5', '>= 8.0.5.2'
 gem 'pg', '~> 1.1'
 # Pinned to the rack 3.1 series; the patched floor is enforced by
-# spec/config/gemfile_lock_spec.rb. Rails 7.2.3.2 also permits rack 3.2, so
-# drop this pin when Rails moves.
+# spec/config/gemfile_lock_spec.rb. Rails 8.0 also permits rack 3.2; moving to
+# it is a separate change.
 gem 'rack', '~> 3.1.21'
 gem 'dotenv-rails', '>= 3.1.1'
 gem 'puma', '~> 7.2.1'
 gem 'bootsnap', require: false
 gem 'devise', '~> 5.0', '>= 5.0.4'
-gem 'simple_token_authentication', '~> 1.18'
+# No rubygems release allows Rails 8; this upstream commit only widens the Rails
+# caps, its lib/ is identical to 1.18.1.
+gem 'simple_token_authentication', github: 'gonzalo-bulnes/simple_token_authentication', ref: 'f1cba4e3e614932ffcb6dfd2d8bf03acd64cb1ec'
 gem 'doorkeeper', '~> 5.9'
 gem 'jwt', '~> 3.3'
 gem 'rswag-api'
 gem 'rswag-ui'
 gem 'cancancan', '~> 3.5'
 gem 'redis', '~> 5.1'
-gem 'redis-rails', '~> 5.0'
 gem 'redis-actionpack', '~> 5.0'
 gem 'sentry-ruby', '~> 7.1'
 gem 'sentry-rails', '~> 7.1'
