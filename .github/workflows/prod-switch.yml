@@ -7,18 +7,19 @@ run-name: Prod Switch to ${{ inputs.to }}${{ inputs.dry_run && ' (dry run)' || '
 #
 # 1. prepare: over the VPN, the target must answer, run fe and get its paused service resumed; the
 #    live prod must run the release. For to=aws while the AWS instance is down, standby (after the
-#    operator approves the environment prod-dns) dispatches Project Terraform Prod with
-#    prod_target=aws-standby (instance running or re-created, records stay on srv), or prints it for
-#    the operator. target then waits for the instance and checks it again, and, when the target does
+#    operator approves the environment prod-dns; a dry run asks for no approval) dispatches Project
+#    Terraform Prod with prod_target=aws-standby (instance running or re-created, records stay on
+#    srv), or prints it for the operator. target then waits for the instance and checks it again, and, when the target does
 #    not run the release, dispatches Kamal Deploy target=<to> (prod_switch_run) and watches it, off
 #    the VPN, whose lock that run needs.
 # 2. data: the target must run the release; the live prod goes into Kamal maintenance with its app
 #    stopped, a final pg_dump is restored into the target's recreated database, and the row counts
 #    of every table must match.
-# 3. prod-dns: after the operator approves the environment prod-dns, Project Terraform Prod in
-#    1_mvp_infra@env/prod is dispatched with prod_target=<to> (INFRA_PROD_DISPATCH_TOKEN), or, without
-#    that token or when the dispatch fails, the exact command and record changes are printed for the
-#    operator; then the job waits for public DNS to show the target.
+# 3. prod-dns: after the operator approves the environment prod-dns (a dry run asks for none and
+#    only prints the dispatch), Project Terraform Prod in 1_mvp_infra@env/prod is dispatched with
+#    prod_target=<to> (INFRA_PROD_DISPATCH_TOKEN), or, without that token or when the dispatch
+#    fails, the exact command and record changes are printed for the operator; then the job waits
+#    for public DNS to show the target.
 # 4. finalize: /health, the read-only smoke and fe's config.js on the public URLs, pinned to the
 #    addresses DNS now gives; prod-current/prod-previous follow the target.
 # 5. finalize: the old host's app containers are stopped, never removed. The AWS instance itself is
@@ -33,9 +34,9 @@ run-name: Prod Switch to ${{ inputs.to }}${{ inputs.dry_run && ' (dry run)' || '
 # and prod-dns never began; nothing changed for users but a few minutes of maintenance. Once
 # prod-dns has started (touched=true) nothing is undone automatically: README, after DNS.
 #
-# Dual control: main only, environment prod, confirm=prod, a release tag the live prod runs, and
-# the prod-dns approval. dry_run (the default) prints every command that would touch a host, ECR,
-# DNS or infra and runs none of them.
+# Dual control: main only, environment prod, confirm=prod, a release tag the live prod runs, and,
+# for a real run (dry_run=false), the prod-dns approval. dry_run (the default) prints every command
+# that would touch a host, ECR, DNS or infra and runs none of them.
 
 on:
   workflow_dispatch:
@@ -287,13 +288,14 @@ jobs:
           message: ${{ format('⏸ Prod Switch {0} -> aws {1}{2} - the AWS instance does not answer; prod and DNS stay on {0}. Approve prod-dns to start it through infra (prod_target=aws-standby, records stay on {0}) {3}/{4}/actions/runs/{5}', needs.guard.outputs.from, needs.guard.outputs.tag, inputs.dry_run && ' (dry run)' || '', github.server_url, github.repository, github.run_id) }}
 
   # Step 1 for to=aws while the AWS instance is down. The prod-dns approval is the operator's OK for
-  # the infra apply; DNS does not move.
+  # the infra apply; DNS does not move. A dry run only prints the dispatch, so it runs in
+  # prod-dns-dry-run, which has no reviewer.
   standby:
     name: Start the AWS standby (operator approval)
     needs: [guard, prepare]
     if: ${{ needs.prepare.outputs.steps == 'standby' }}
     runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
-    environment: prod-dns
+    environment: ${{ inputs.dry_run && 'prod-dns-dry-run' || 'prod-dns' }}
     timeout-minutes: 60
     outputs:
       dispatched: ${{ steps.standby.outputs.dispatched }}
@@ -527,15 +529,16 @@ jobs:
           topic: PILOT_PROD_ALERTS
           message: ${{ format('⏸ Prod Switch {0} -> {1} {2}{3} - the data is on {1} and every row count matches, prod is in maintenance until DNS moves. Approve prod-dns {4}/{5}/actions/runs/{6}', needs.guard.outputs.from, needs.guard.outputs.to, needs.guard.outputs.tag, inputs.dry_run && ' (dry run)' || '', github.server_url, github.repository, github.run_id) }}
 
-  # Step 3. The environment prod-dns has the operator as required reviewer: the approval is the
-  # operator's OK. touched=true is set before anything else, so abort never runs once DNS may move.
+  # Step 3. The environment prod-dns has the operator as required reviewer: in a real run the
+  # approval is the operator's OK. A dry run prints the dispatch and moves no DNS, so it runs in
+  # prod-dns-dry-run, which has no reviewer. touched=true is set before anything else, so abort never runs once DNS may move.
   # !cancelled(): the implicit success() would skip it whenever the standby was skipped.
   prod-dns:
     name: Switch DNS (operator approval)
     needs: [guard, data]
     if: ${{ !cancelled() && needs.data.result == 'success' }}
     runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
-    environment: prod-dns
+    environment: ${{ inputs.dry_run && 'prod-dns-dry-run' || 'prod-dns' }}
     timeout-minutes: 90
     outputs:
       touched: ${{ steps.touched.outputs.touched }}

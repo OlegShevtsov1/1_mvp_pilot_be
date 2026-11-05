@@ -22,6 +22,13 @@ its entry under `[Unreleased]` (checked by `changelog-check`); a release moves t
 
 ### Security
 
+## [0.5.3] - 2026-11-05
+
+### Fixed
+
+- Prod Switch dry runs no longer wait for the `prod-dns` approval: `standby` and `prod-dns` run in the environment
+  `prod-dns-dry-run` when `dry_run` is true, and a real switch still needs the operator's approval of `prod-dns`.
+
 ## [0.5.2] - 2026-11-05
 
 ### Fixed

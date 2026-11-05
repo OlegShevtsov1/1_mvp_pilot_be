@@ -429,6 +429,11 @@ RSpec.describe 'prod workflows' do
       GithubExpression.evaluate(expression.delete_prefix('${{').delete_suffix('}}').sub(/\A\s*(always\(\)|!cancelled\(\)) && /, ''), context)
     end
 
+    # The environment a job runs in, for a real run or a dry run.
+    def environment_of(job, dry_run)
+      GithubExpression.interpolate(jobs.fetch(job).fetch('environment'), 'inputs' => { 'dry_run' => dry_run })
+    end
+
     def script_step(job, run)
       jobs.fetch(job).fetch('steps').find { |s| s['run'].to_s.start_with?("deploy/prod_switch.sh #{run}") } || raise("no #{run} in #{job}")
     end
@@ -527,7 +532,7 @@ RSpec.describe 'prod workflows' do
 
     it 'switches DNS only in the prod-dns job, behind the prod-dns environment, after the data is verified' do
       dns = jobs.fetch('prod-dns')
-      expect(dns.fetch('environment')).to eq('prod-dns')
+      expect(environment_of('prod-dns', false)).to eq('prod-dns')
       expect(needs(dns)).to include('data')
       expect(dns.fetch('if')).to start_with('${{ !cancelled() && ')
       { 'success' => true, 'skipped' => false, 'failure' => false }.each do |result, runs|
@@ -540,7 +545,7 @@ RSpec.describe 'prod workflows' do
       expect(switch.fetch('env')).to include('GH_TOKEN' => '${{ secrets.INFRA_PROD_DISPATCH_TOKEN }}')
       readers = jobs.select { |_, job| job.to_yaml.include?('secrets.INFRA_PROD_DISPATCH_TOKEN') }
       expect(readers.keys).to contain_exactly('standby', 'prod-dns')
-      readers.each_value { |job| expect(job.fetch('environment')).to eq('prod-dns') }
+      readers.each_key { |name| expect(environment_of(name, false)).to eq('prod-dns'), name }
       expect(dns.fetch('steps').none? { |s| uses?(s, 'vpn-up') }).to be(true)
     end
 
@@ -590,7 +595,7 @@ RSpec.describe 'prod workflows' do
 
     it 'starts the AWS standby only behind the prod-dns approval, and only when prepare asked for it' do
       standby = jobs.fetch('standby')
-      expect(standby.fetch('environment')).to eq('prod-dns')
+      expect(environment_of('standby', false)).to eq('prod-dns')
       expect(needs(standby)).to contain_exactly('guard', 'prepare')
       %w[standby live deploy].zip([ true, false, false ]).each do |steps, runs|
         expect(condition(standby.fetch('if'), 'needs' => { 'prepare' => { 'outputs' => { 'steps' => steps } } })).to be(runs), steps
@@ -601,6 +606,24 @@ RSpec.describe 'prod workflows' do
                                           'INFRA_PROD_REPO' => step(jobs.fetch('prod-dns'), 'Switch DNS through the infra prod stack').dig('env', 'INFRA_PROD_REPO'))
       expect(standby.fetch('outputs')).to eq('dispatched' => '${{ steps.standby.outputs.dispatched }}')
       expect(standby.fetch('steps').none? { |s| uses?(s, 'vpn-up') }).to be(true)
+    end
+
+    # The prod-dns reviewer gates real runs only: a dry run prints the infra dispatch and moves no DNS
+    # (deploy/prod_switch.sh dns and standby with DRY_RUN=1), so it passes both jobs without an approval.
+    it 'runs the DNS step and the standby of a dry run in prod-dns-dry-run, without the prod-dns approval' do
+      %w[prod-dns standby].each do |name|
+        expect(environment_of(name, false)).to eq('prod-dns'), name
+        expect(environment_of(name, true)).to eq('prod-dns-dry-run'), name
+        run = jobs.fetch(name).fetch('steps').find { |s| s['run'].to_s.start_with?('deploy/prod_switch.sh ') }
+        expect(run.fetch('env').fetch('DRY_RUN')).to eq("${{ inputs.dry_run && '1' || '' }}"), name
+        expect(run).not_to have_key('if'), name
+      end
+      expect(jobs.values.map { |job| job['environment'] }.uniq).to contain_exactly(
+        'prod', nil, "${{ inputs.dry_run && 'prod-dns-dry-run' || 'prod-dns' }}"
+      )
+      dns = jobs.fetch('prod-dns')
+      expect(condition(dns.fetch('if'), 'inputs' => { 'dry_run' => true }, 'needs' => { 'data' => { 'result' => 'success' } })).to be(true)
+      expect(dns.fetch('steps').first).to include('id' => 'touched')
     end
 
     it 'runs the target job after prepare, and after the standby only when it succeeded or was skipped' do
