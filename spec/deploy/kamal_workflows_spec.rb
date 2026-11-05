@@ -433,13 +433,14 @@ RSpec.describe 'prod workflows' do
       jobs.fetch(job).fetch('steps').find { |s| s['run'].to_s.start_with?("deploy/prod_switch.sh #{run}") } || raise("no #{run} in #{job}")
     end
 
-    it 'takes exactly to (srv or aws, no default), version, an optional source_sha, confirm and dry_run (default true)' do
+    it 'takes exactly to (srv or aws, no default), version, an optional source_sha, confirm, dry_run (default true) and finish (default false)' do
       inputs = workflow.dig('on', 'workflow_dispatch', 'inputs')
-      expect(inputs.keys).to eq(%w[to version source_sha confirm dry_run])
+      expect(inputs.keys).to eq(%w[to version source_sha confirm dry_run finish])
       expect(inputs.fetch('to')).to include('type' => 'choice', 'options' => %w[srv aws], 'required' => true)
       expect(inputs.fetch('to')).not_to have_key('default')
       expect(inputs.fetch('source_sha')).to include('type' => 'string', 'required' => false)
       expect(inputs.fetch('dry_run')).to include('type' => 'boolean', 'default' => true)
+      expect(inputs.fetch('finish')).to include('type' => 'boolean', 'default' => false, 'required' => false)
     end
 
     it 'holds kamal-prod for the whole run and never cancels a running switch' do
@@ -466,7 +467,8 @@ RSpec.describe 'prod workflows' do
       expect(step(guard, 'Find the live prod host (public DNS)').fetch('run')).to eq('deploy/prod_active_target.sh >> "${GITHUB_OUTPUT}"')
       switch = step(guard, 'Check the direction of the switch')
       expect(switch.fetch('run')).to eq('deploy/prod_switch.sh guard >> "${GITHUB_OUTPUT}"')
-      expect(switch.fetch('env')).to eq('TO' => '${{ inputs.to }}', 'ACTIVE_TARGET' => '${{ steps.active.outputs.active_target }}')
+      expect(switch.fetch('env')).to eq('TO' => '${{ inputs.to }}', 'ACTIVE_TARGET' => '${{ steps.active.outputs.active_target }}',
+                                        'FINISH' => "${{ inputs.finish && '1' || '' }}")
       expect(names.last(2)).to eq([ 'Find the live prod host (public DNS)', 'Check the direction of the switch' ])
       expect(guard.fetch('outputs').keys).to include('tag', 'version', 'source_sha', 'to', 'from', 'to_destination', 'from_destination')
     end
@@ -675,6 +677,24 @@ RSpec.describe 'prod workflows' do
         expect(condition(finalize.fetch('if'), 'needs' => { 'prod-dns' => { 'result' => result } })).to be(runs), result
       end
       expect(finalize.fetch('env')).to include('PROD_ACTIVE_TARGET' => '${{ needs.guard.outputs.to }}')
+    end
+
+    it 'finishes a switch whose DNS already moved: with finish, prepare is skipped and finalize runs after preflight' do
+      prepare = jobs.fetch('prepare')
+      expect(condition(prepare.fetch('if'), 'inputs' => { 'finish' => true })).to be(false)
+      expect(condition(prepare.fetch('if'), 'inputs' => { 'finish' => false })).to be(true)
+      expect(condition(prepare.fetch('if'), {})).to be(true)
+
+      finalize = jobs.fetch('finalize')
+      expect(needs(finalize)).to include('preflight', 'prod-dns')
+      runs = lambda do |finish, preflight, prod_dns|
+        condition(finalize.fetch('if'), 'inputs' => { 'finish' => finish },
+                                        'needs' => { 'preflight' => { 'result' => preflight }, 'prod-dns' => { 'result' => prod_dns } })
+      end
+      expect(runs.call(true, 'success', 'skipped')).to be(true)
+      expect(runs.call(true, 'failure', 'skipped')).to be(false)
+      expect(runs.call(false, 'success', 'skipped')).to be(false)
+      expect(runs.call(false, 'success', 'success')).to be(true)
     end
 
     it 'passes the mirror VPN client inputs to every vpn-up and always disconnects after it, outside a dry run' do

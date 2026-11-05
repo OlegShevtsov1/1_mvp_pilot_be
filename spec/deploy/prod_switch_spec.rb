@@ -43,8 +43,8 @@ RSpec.describe 'deploy/prod_switch.sh' do
   end
 
   describe 'guard' do
-    def guard(to, active)
-      switch('guard', env: { 'TO' => to, 'ACTIVE_TARGET' => active }) { |output, status| return [ output, status ] }
+    def guard(to, active, finish: '')
+      switch('guard', env: { 'TO' => to, 'ACTIVE_TARGET' => active, 'FINISH' => finish }) { |output, status| return [ output, status ] }
     end
 
     it 'names both sides and their destinations for each direction' do
@@ -70,6 +70,21 @@ RSpec.describe 'deploy/prod_switch.sh' do
         expect(status.exitstatus).to eq(1), [ to, active ].inspect
         expect(output).not_to include('to=')
       end
+    end
+
+    it 'with FINISH=1 names the other host as from when public DNS already shows the target' do
+      output, status = guard('srv', 'srv', finish: '1')
+      expect(status).to be_success, output
+      expect(output).to eq("to=srv\nfrom=aws\nto_destination=prod-srv\nfrom_destination=prod\n")
+      output, = guard('aws', 'aws', finish: '1')
+      expect(output).to eq("to=aws\nfrom=srv\nto_destination=prod\nfrom_destination=prod-srv\n")
+    end
+
+    it 'with FINISH=1 refuses while public DNS still shows the other host' do
+      output, status = guard('srv', 'aws', finish: '1')
+      expect(status.exitstatus).to eq(1)
+      expect(output).to include('::error::public DNS shows aws, not srv: nothing to finish')
+      expect(output).not_to include('to=')
     end
   end
 
@@ -651,6 +666,41 @@ RSpec.describe 'deploy/prod_switch.sh' do
         expect(status.exitstatus).to eq(1)
         expect(output).to include('config.js does not set API_URL')
         expect(log_lines(root, 'crane.log').grep(/\Atag /)).to be_empty
+      end
+    end
+
+    context "with fe's multi-line config.js, one key per line" do
+      def fe_config_js(env_name)
+        <<~JS
+          window.APP_CONFIG = {
+            API_URL: "https://#{zone}",
+            SENTRY_DSN: "",
+            GOOGLE_CLIENT_ID: "",
+            OAUTH_CLIENT_ID: "",
+            SUPPORT_EMAIL: "",
+            ENV_NAME: "#{env_name}",
+            APP_VERSION: "v0.1.0",
+          };
+        JS
+      end
+
+      it 'accepts it and moves prod-current' do
+        finalize(files: { 'config.js' => fe_config_js('prod') }) do |output, status, root|
+          expect(status).to be_success, output
+          expect(output).to include("fe's config.js points at https://#{zone}")
+          expect(log_lines(root, 'crane.log').grep(/\Atag /)).to eq([
+            "tag #{repo}@sha256:old prod-previous",
+            "tag #{repo}@sha256:new prod-current"
+          ])
+        end
+      end
+
+      it 'fails without moving a tag when it sets another ENV_NAME' do
+        finalize(files: { 'config.js' => fe_config_js('dev') }) do |output, status, root|
+          expect(status.exitstatus).to eq(1)
+          expect(output).to include('config.js does not set API_URL')
+          expect(log_lines(root, 'crane.log').grep(/\Atag /)).to be_empty
+        end
       end
     end
 

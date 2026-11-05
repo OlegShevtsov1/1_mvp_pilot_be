@@ -487,6 +487,11 @@ message say prod may still be in maintenance: run
 `PROD_ACTIVE_TARGET=<from> deploy/prod_switch.sh abort <from destination> sha-<sha>` from a
 console. Once `prod-dns` has started (its output `touched=true`) nothing is undone automatically,
 because DNS may have moved.
+After DNS, without a console that has both SSH keys: once public DNS shows the target, dispatch
+`gh workflow run "Prod Switch" --ref main -f to=<to> -f version=vX.Y.Z -f confirm=prod -f finish=true`
+(on the mirror add `-f source_sha=<primary sha>`; a dry run first, then `-f dry_run=false`). It runs
+only the guard, preflight and `finalize` (steps 4 and 5): no data move, no DNS.
+
 After DNS, from a console on the VPN with the deploy environment and both SSH keys:
 
 - finish: once public DNS shows the target (re-run the infra apply if needed),
