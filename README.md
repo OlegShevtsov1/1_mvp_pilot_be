@@ -421,16 +421,20 @@ gh workflow run "Prod Switch" --ref main -f to=aws -f version=vX.Y.Z -f confirm=
 
 On the mirror add `-f source_sha=<primary sha>`, as for Kamal Deploy. `dry_run` is `true` by default:
 the guards run, every other command that would touch a host, ECR, DNS or infra is printed as
-`[dry-run] ...` and none runs.
+`[dry-run] ...` and none runs. A dry run asks for no `prod-dns` approval: its `standby` and
+`prod-dns` jobs run in the environment `prod-dns-dry-run`, which GitHub creates on the first dry run
+with no reviewer, so the dry run goes through to `finalize` unattended.
 
 1. `prepare`, `standby`, `target`, nothing touched: `prepare` checks the target over the VPN and
    resumes a service an earlier switch paused there. It refuses when the srv host is not reachable,
    when fe's containers do not run on the target, or when the live prod runs another version. For
    `to=aws` while the AWS instance does not answer (stopped, or deleted by a separate decision), it
-   asks for the standby: Telegram asks for the `prod-dns` approval, and `standby`, in environment
-   `prod-dns`, dispatches `Project Terraform Prod` with `prod_target=aws-standby` (the AWS instance
-   running, re-created if absent; the records stay on srv, DNS does not move), the same way and with
-   the same fallback as the DNS step (3.). `target` then waits up to 20 minutes for SSH on the AWS
+   asks for the standby: Telegram asks for the `prod-dns` approval (a dry run's message says
+   `(dry run)` and there is nothing to approve), and `standby`, in environment
+   `prod-dns` (a real run; a dry run uses `prod-dns-dry-run` and only prints the dispatch),
+   dispatches `Project Terraform Prod` with `prod_target=aws-standby` (the AWS instance running,
+   re-created if absent; the records stay on srv, DNS does not move), the same way and with the same
+   fallback as the DNS step (3.). `target` then waits up to 20 minutes for SSH on the AWS
    instance and checks it again (fe must run there too). That wait holds the shared VPN lock, so Dev
    Deploys started meanwhile fail fast. When the instance does not come up in time, nothing touched
    prod: run Prod Switch again once it answers, and the standby is skipped. Expect about an hour for a
@@ -456,8 +460,10 @@ the guards run, every other command that would touch a host, ECR, DNS or infra i
    abort runs; a dry run prints it as `[dry-run]` and keeps nothing. Then the target's app boots on the
    release. Telegram asks for the `prod-dns` approval (GitHub notifies the reviewers
    too, and a failed message does not fail the job); prod stays in maintenance until DNS moves, so
-   approve promptly.
-3. `prod-dns`: in the GitHub environment `prod-dns`, whose required reviewer is the operator. With
+   approve promptly. A dry run sends the same message marked `(dry run)`, but nothing waits for an
+   approval: its `prod-dns` job starts at once.
+3. `prod-dns`: in the GitHub environment `prod-dns`, whose required reviewer is the operator (a real
+   run; a dry run uses `prod-dns-dry-run` and only prints the dispatch). With
    `INFRA_PROD_DISPATCH_TOKEN` it dispatches `Project Terraform Prod` in
    `${INFRA_PROD_REPO:-<owner>/1_mvp_infra}@env/prod` with `project=<PROJECT_NAME>`, `action=apply`,
    `confirm=APPLY-PROD-<PROJECT_NAME>` and `prod_target=<to>`, and watches it. Without the token, or
@@ -512,7 +518,8 @@ environment `prod-dns` with the operator as required reviewer and the secret
 contents read so the job can check the `prod_target` options; optional, without it the operator
 applies by hand); the variable `INFRA_PROD_REPO` when the infra repository is not
 `<owner>/1_mvp_infra`; the `prod_target` input of `Project Terraform Prod`, which must persist the
-target so a later apply does not revert DNS.
+target so a later apply does not revert DNS. The environment `prod-dns-dry-run` has no required
+reviewer and needs no secret; a reviewer there would only bring back the dry run's wait.
 
 Before each dispatch the job reads `Project Terraform Prod` from `env/prod` (`gh workflow view
 --yaml`) and dispatches only a `prod_target` value it offers. A missing value (`aws-standby` until
