@@ -24,6 +24,10 @@ run-name: Prod Switch to ${{ inputs.to }}${{ inputs.dry_run && ' (dry run)' || '
 # 5. finalize: the old host's app containers are stopped, never removed. The AWS instance itself is
 #    stopped or deleted only through infra, never here.
 #
+# finish=true finishes a switch whose DNS already moved but whose finalize failed: the same guard
+# (public DNS must already show the target) and preflight, then only finalize (4 and 5); no data
+# move, no DNS.
+#
 # Rollback: nothing touches prod before data's freeze. Any failure there or a refused approval
 # before prod-dns starts runs abort, which brings the live prod back once public DNS still shows it
 # and prod-dns never began; nothing changed for users but a few minutes of maintenance. Once
@@ -58,6 +62,11 @@ on:
         required: true
         type: boolean
         default: true
+      finish:
+        description: Only finish a switch whose DNS already moved - finalize-public and stop-old (README "Prod Switch", after DNS); no data move, no DNS
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -125,6 +134,7 @@ jobs:
         env:
           TO: ${{ inputs.to }}
           ACTIVE_TARGET: ${{ steps.active.outputs.active_target }}
+          FINISH: ${{ inputs.finish && '1' || '' }}
         run: deploy/prod_switch.sh guard >> "${GITHUB_OUTPUT}"
 
   # Only names are checked and printed, never values. A switch reaches both hosts.
@@ -178,6 +188,7 @@ jobs:
   prepare:
     name: Check the target
     needs: [guard, preflight]
+    if: ${{ !inputs.finish }}
     runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
     environment: prod
     timeout-minutes: 20
@@ -633,8 +644,8 @@ jobs:
   # Steps 4 and 5. The public checks run before vpn-up, which would answer the zone from the VPN's DNS.
   finalize:
     name: Check the public URLs, move the tags, stop the old host
-    needs: [guard, prod-dns]
-    if: ${{ !cancelled() && needs.prod-dns.result == 'success' }}
+    needs: [guard, preflight, prod-dns]
+    if: ${{ !cancelled() && (needs.prod-dns.result == 'success' || (inputs.finish && needs.preflight.result == 'success')) }}
     runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
     environment: prod
     timeout-minutes: 40

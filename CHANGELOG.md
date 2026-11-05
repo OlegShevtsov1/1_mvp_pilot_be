@@ -22,6 +22,14 @@ its entry under `[Unreleased]` (checked by `changelog-check`); a release moves t
 
 ### Security
 
+## [0.5.2] - 2026-11-05
+
+### Fixed
+
+- Prod Switch `finalize` accepts fe's multi-line `config.js` (one key per line), which it refused although it set
+  `API_URL` and `ENV_NAME prod`; the new `finish` input of Prod Switch runs only `finalize` (public checks, tag move,
+  stop of the old host) for a switch whose DNS already moved (PILOT-642).
+
 ## [0.5.1] - 2026-11-04
 
 ### Fixed

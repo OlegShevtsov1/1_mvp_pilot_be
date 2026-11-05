@@ -6,6 +6,8 @@
 # Usage: deploy/prod_switch.sh guard
 #          env TO (aws|srv) and ACTIVE_TARGET (deploy/prod_active_target.sh); refuses a switch to
 #          the host that is already live. Prints to=, from=, to_destination=, from_destination=.
+#          FINISH=1 (finish a switch whose DNS moved) instead requires ACTIVE_TARGET to be TO and
+#          prints the other host as from.
 #        deploy/prod_switch.sh plan
 #          the step selection of prepare (select_steps) from observations in the environment.
 #        deploy/prod_switch.sh prepare <to-dest> vX.Y.Z [<source_sha>]
@@ -208,7 +210,12 @@ cmd_guard() {
   local to="${TO:-}" from="${ACTIVE_TARGET:-}"
   [[ "$to" == 'aws' || "$to" == 'srv' ]] || fail "to must be aws or srv (got '${to}')"
   [[ "$from" == 'aws' || "$from" == 'srv' ]] || fail "the live prod host must be aws or srv (got '${from}')"
-  [[ "$to" != "$from" ]] || fail "prod already runs on ${to} (public DNS points there): nothing to switch"
+  if [[ -n "${FINISH:-}" ]]; then
+    [[ "$to" == "$from" ]] || fail "public DNS shows ${from}, not ${to}: nothing to finish; run the switch, or follow README \"Prod Switch\", after DNS"
+    if [[ "$to" == 'aws' ]]; then from='srv'; else from='aws'; fi
+  else
+    [[ "$to" != "$from" ]] || fail "prod already runs on ${to} (public DNS points there): nothing to switch"
+  fi
   echo "to=${to}"
   echo "from=${from}"
   echo "to_destination=$(destination_of "$to")"
@@ -683,7 +690,8 @@ cmd_finalize_public() {
   SMOKE_READ_ONLY=1 SMOKE_CONNECT_TO="${PROJECT_ZONE}:443:${addr}:443" bin/swagger_smoke "https://${PROJECT_ZONE}" ||
     fail "the read-only smoke failed on https://${PROJECT_ZONE} (${to}); follow README \"Prod Switch\", after DNS"
 
-  config="$(curl -fsS --max-time 10 --resolve "app.${PROJECT_ZONE}:443:${app_addr}" "https://app.${PROJECT_ZONE}/config.js" 2> /dev/null | tr -d ' "' || true)"
+  # fe writes one key per line: every whitespace goes, so a line break never stands before a key.
+  config="$(curl -fsS --max-time 10 --resolve "app.${PROJECT_ZONE}:443:${app_addr}" "https://app.${PROJECT_ZONE}/config.js" 2> /dev/null | tr -d '[:space:]"' || true)"
   if ! grep -Eq "[{,]API_URL:https://${PROJECT_ZONE//./\\.}[,}]" <<< "$config" || ! grep -Eq '[{,]ENV_NAME:prod[,}]' <<< "$config"; then
     fail "https://app.${PROJECT_ZONE}/config.js does not set API_URL https://${PROJECT_ZONE} and ENV_NAME prod; follow README \"Prod Switch\", after DNS"
   fi
